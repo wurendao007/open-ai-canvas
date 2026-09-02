@@ -658,6 +658,33 @@ func TestPrepareResourceDeliveryKeepsForcedOriginDirectWithoutCDN(t *testing.T) 
 	}
 }
 
+func TestPrepareResourceDeliveryUsesDirectURLForPublicS3Endpoint(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	svc := newResourceTestService(t)
+	settingJSON, _ := json.Marshal(ossSettingValue{
+		Enabled: true, Provider: s3Provider, Region: "us-east-1", Endpoint: "https://127.0.0.1", Bucket: "private-bucket",
+		AccessKeyID: "access-id", AccessKeySecret: "secret-value",
+	})
+	if err := svc.repo.SaveSystemSetting(&model.SystemSetting{Key: ossSettingKey, ValueJSON: string(settingJSON)}); err != nil {
+		t.Fatal(err)
+	}
+	resource := model.Resource{
+		ID: "resource-public-s3", UserID: "user-1", Kind: "image", Status: model.ResourceStatusReady,
+		Provider: s3Provider, Endpoint: "https://127.0.0.1", Bucket: "private-bucket",
+		ObjectKey: "users/user-1/image/public.png", MimeType: "image/png",
+	}
+	if err := svc.repo.CreateResource(&resource); err != nil {
+		t.Fatal(err)
+	}
+	delivery, err := svc.PrepareResourceDelivery("user-1", resource.ID, ResourceDeliveryOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delivery.RedirectURL == "" || !strings.Contains(delivery.RedirectURL, "X-Amz-Signature=") || delivery.Resource == nil {
+		t.Fatalf("PrepareResourceDelivery() = %#v, want a direct S3 URL", delivery)
+	}
+}
+
 func TestNormalizeSingleByteRange(t *testing.T) {
 	tests := map[string]string{
 		"bytes=0-1023":       "bytes=0-1023",

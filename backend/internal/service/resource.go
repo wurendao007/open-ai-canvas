@@ -134,9 +134,10 @@ func (s *Service) prepareResourceDelivery(userID string, resource *model.Resourc
 		if err != nil {
 			return nil, err
 		}
-		// S3 兼容 Endpoint 可能是私网服务；浏览器默认始终使用同源代理。
-		// 只有明确的服务端上游需求才签发可公开访问的短时地址。
-		if setting.Provider == s3Provider && !options.ForceDirect {
+		// S3 兼容 Endpoint 可能是私网服务；私网或 HTTP Endpoint 继续使用同源代理。
+		// 公开 HTTPS Endpoint（例如雨云 OSS）可安全签发短时预签名地址，避免
+		// 图片查看和下载绕回应用服务器传输对象内容。
+		if setting.Provider == s3Provider && !options.ForceDirect && !publicHTTPSStorageEndpoint(setting.Endpoint) {
 			return &ResourceDelivery{Resource: resource}, nil
 		}
 		if setting.Provider == qiniuKodoProvider && setting.CDNBaseURL != "" {
@@ -155,7 +156,7 @@ func (s *Service) prepareResourceDelivery(userID string, resource *model.Resourc
 			}
 			return &ResourceDelivery{Resource: resource, RedirectURL: redirectURL}, nil
 		}
-		if options.ForceDirect {
+		if options.ForceDirect || (setting.Provider == s3Provider && publicHTTPSStorageEndpoint(setting.Endpoint)) {
 			if setting.Provider == s3Provider && !publicHTTPSStorageEndpoint(setting.Endpoint) {
 				redirectURL, err := s.signedHTTPSPublicResourceURL(resource, time.Now().Add(directResourceURLTTL))
 				if err != nil {

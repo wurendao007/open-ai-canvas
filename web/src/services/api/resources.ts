@@ -190,11 +190,20 @@ export function resolveResourceUrl(storageKey?: string, fallback = "") {
     return id ? resourceFileUrl(id) : fallback;
 }
 
-export async function getResourceBlob(storageKey: string) {
+export async function getResourceBlob(storageKey: string, options: { proxyFallback?: boolean } = {}) {
     const id = resourceIdFromStorageKey(storageKey);
     if (!id) return null;
-    const url = resourceProxyFileUrl(id);
-    const response = await fetch(url, { credentials: isResourceUrl(url) ? "include" : "same-origin" });
+    const directURL = resourceFileUrl(id);
+    try {
+        const response = await fetch(directURL, { credentials: "include" });
+        if (response.ok) return response.blob();
+    } catch {
+        // Public object-storage URLs may not expose CORS for Blob reads.
+    }
+    if (options.proxyFallback === false) return null;
+    // Keep a same-origin fallback for private buckets and deployments without CORS.
+    const proxyURL = resourceProxyFileUrl(id);
+    const response = await fetch(proxyURL, { credentials: isResourceUrl(proxyURL) ? "include" : "same-origin" });
     if (!response.ok) return null;
     return response.blob();
 }

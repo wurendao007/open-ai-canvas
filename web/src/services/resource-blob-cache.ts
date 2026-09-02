@@ -99,7 +99,9 @@ async function downloadAndCacheResource(storageKey: string, target: ResourceCach
 }
 
 async function downloadResourceBlob(storageKey: string, target: ResourceCacheMeta) {
-    const blob = await getResourceBlob(storageKey);
+    // Cache misses must not force public object-storage media through the app server
+    // when the bucket does not expose browser CORS for Blob reads.
+    const blob = await getResourceBlob(storageKey, { proxyFallback: false });
     if (!blob) return null;
     sessionBlobs.set(target.key, blob);
     if (blob.size <= MAX_CACHE_BYTES) await enqueuePersist(target, blob);
