@@ -178,6 +178,18 @@ export function resourceFileUrl(id: string) {
     return `${base}/resources/${encodeURIComponent(id)}/file`;
 }
 
+export function resourceDownloadUrl(id: string) {
+    return `${resourceFileUrl(id)}?download=1`;
+}
+
+export function resourceDownloadUrlFromUrl(url: string) {
+    if (!isResourceUrl(url) || /(?:[?&])download=/.test(url)) return url;
+    const hashIndex = url.indexOf("#");
+    const fragment = hashIndex >= 0 ? url.slice(hashIndex) : "";
+    const base = hashIndex >= 0 ? url.slice(0, hashIndex) : url;
+    return `${base}${base.includes("?") ? "&" : "?"}download=1${fragment}`;
+}
+
 function resourceProxyFileUrl(id: string) {
     const base = String(apiBaseURL).replace(/\/+$/, "");
     return `${base}/resources/${encodeURIComponent(id)}/file?proxy=1`;

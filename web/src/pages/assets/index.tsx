@@ -27,6 +27,7 @@ import { useUserStore } from "@/stores/use-user-store";
 import { createAssetFolder, deleteAssetFolder, listAssetFolders, listRemoteAssetsPage, moveRemoteAssetsToFolder, updateAssetFolder, type AssetFolder } from "@/services/api/user-data";
 import { AssetBatchUploadModal } from "./asset-batch-upload-modal";
 import { useAppearanceStore } from "@/stores/use-appearance-store";
+import { resourceDownloadUrl, resourceDownloadUrlFromUrl, resourceIdFromStorageKey } from "@/services/api/resources";
 
 type LibraryAsset = Exclude<Asset, { kind: "entity" }>;
 
@@ -381,7 +382,9 @@ export default function AssetsPage() {
 
     const downloadImage = (asset: LibraryAsset) => {
         if (asset.kind !== "image" && asset.kind !== "video" && asset.kind !== "audio" && asset.kind !== "model") return;
-        const url = asset.kind === "image" ? asset.data.dataUrl : asset.data.url;
+        const resourceId = resourceIdFromStorageKey(asset.data.storageKey);
+        const sourceUrl = asset.kind === "image" ? asset.data.dataUrl : asset.data.url;
+        const url = resourceId ? resourceDownloadUrl(resourceId) : resourceDownloadUrlFromUrl(sourceUrl);
         const extension = asset.kind === "model" ? asset.data.fileName.split(".").pop() || "glb" : asset.data.mimeType.split("/")[1] || "png";
         saveAs(url, `${asset.title || "asset"}.${extension}`);
     };

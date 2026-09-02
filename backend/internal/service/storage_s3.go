@@ -132,7 +132,7 @@ func getS3ObjectRange(setting ossSettingValue, objectKey string, rangeHeader str
 	return &ossObjectStream{body: output.Body, statusCode: status, contentLength: aws.Int64Value(output.ContentLength), contentRange: aws.StringValue(output.ContentRange), acceptRanges: firstNonEmpty(aws.StringValue(output.AcceptRanges), "bytes")}, nil
 }
 
-func signedS3ObjectURL(setting ossSettingValue, objectKey string, expiresAt time.Time) (string, error) {
+func signedS3ObjectURL(setting ossSettingValue, objectKey string, expiresAt time.Time, download ...bool) (string, error) {
 	client, err := newS3Client(setting, 2*time.Minute)
 	if err != nil {
 		return "", err
@@ -141,7 +141,11 @@ func signedS3ObjectURL(setting ossSettingValue, objectKey string, expiresAt time
 	if duration <= 0 {
 		return "", errors.New("S3 签名有效期必须晚于当前时间")
 	}
-	req, _ := client.GetObjectRequest(&awss3.GetObjectInput{Bucket: aws.String(setting.Bucket), Key: aws.String(strings.TrimLeft(objectKey, "/"))})
+	input := &awss3.GetObjectInput{Bucket: aws.String(setting.Bucket), Key: aws.String(strings.TrimLeft(objectKey, "/"))}
+	if len(download) > 0 && download[0] {
+		input.ResponseContentDisposition = aws.String("attachment")
+	}
+	req, _ := client.GetObjectRequest(input)
 	value, err := req.Presign(duration)
 	if err != nil {
 		return "", fmt.Errorf("S3 下载地址签名失败：%w", err)

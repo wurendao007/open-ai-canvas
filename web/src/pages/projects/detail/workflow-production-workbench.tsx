@@ -32,7 +32,7 @@ import {
     type ShotRevisionInput,
     type WorkflowStep,
 } from "@/services/api/projects";
-import { resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
+import { resourceDownloadUrl, resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
 import { skillRuntime } from "@/services/skill-runtime";
 import { configuredModelMatchesCapability, modelDisplayName, modelOptionName, resolveModelChannel, selectableModelsByCapability, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
@@ -775,7 +775,7 @@ function revisionInput(values: ShotEditorValues): ShotRevisionInput {
 async function downloadArtifact(artifact: ShotArtifact, shotTitle: string, onError: (content: string) => void) {
     if (!artifact.resourceId) return;
     try {
-        const response = await fetch(resourceFileUrl(artifact.resourceId), { credentials: "include" });
+        const response = await fetch(resourceDownloadUrl(artifact.resourceId), { credentials: "include" });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const blob = await response.blob();
         const url = URL.createObjectURL(blob);

@@ -256,6 +256,7 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		delivery, err := svc.PrepareResourceDelivery(user.ID, c.Param("id"), service.ResourceDeliveryOptions{
 			ForceDirect: c.Query("direct") == "1",
 			ForceProxy:  c.Query("proxy") == "1",
+			Download:    c.Query("download") == "1",
 		})
 		if err != nil {
 			failService(c, err)
@@ -276,7 +277,7 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		c.Header("ETag", etag)
 		c.Header("Accept-Ranges", "bytes")
 		c.Header("X-Content-Type-Options", "nosniff")
-		if resource.Kind == "file" {
+		if c.Query("download") == "1" || resource.Kind == "file" {
 			c.Header("Content-Disposition", "attachment")
 			c.Header("Content-Security-Policy", "sandbox")
 		}

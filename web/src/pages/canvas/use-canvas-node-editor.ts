@@ -10,6 +10,7 @@ import { applyBatchPrimaryImage, applyNodeConfigPatch } from "@/lib/canvas/canva
 import { resetGenerationTaskMetadata } from "@/lib/canvas/canvas-project-generation";
 import { CONTENT_MODERATION_ERROR_CODE, isContentModerationError } from "@/lib/generation-error";
 import { ensureCanvasNodeAsset } from "@/services/project-asset-sync";
+import { resourceDownloadUrl, resourceDownloadUrlFromUrl, resourceIdFromStorageKey } from "@/services/api/resources";
 import { CanvasNodeType, type CanvasFolderStyle, type CanvasFolderTheme, type CanvasNodeData, type CanvasNodeMetadata, type Position } from "@/types/canvas";
 
 type UseCanvasNodeEditorOptions = {
@@ -183,7 +184,9 @@ export function useCanvasNodeEditor({
 
     const downloadNodeImage = useCallback((node: CanvasNodeData) => {
         if ((node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) || !node.metadata?.content) return;
-        saveAs(node.metadata.content, buildCanvasMediaDownloadFileName(canvasTitle, node));
+        const resourceId = resourceIdFromStorageKey(node.metadata.storageKey);
+        const url = resourceId ? resourceDownloadUrl(resourceId) : resourceDownloadUrlFromUrl(node.metadata.content);
+        saveAs(url, buildCanvasMediaDownloadFileName(canvasTitle, node));
     }, [canvasTitle]);
 
     const saveNodeAsset = useCallback(async (node: CanvasNodeData) => {

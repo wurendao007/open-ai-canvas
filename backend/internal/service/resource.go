@@ -54,6 +54,7 @@ type ResourceStream struct {
 type ResourceDeliveryOptions struct {
 	ForceDirect bool
 	ForceProxy  bool
+	Download    bool
 }
 
 type ResourceDelivery struct {
@@ -134,13 +135,19 @@ func (s *Service) prepareResourceDelivery(userID string, resource *model.Resourc
 		if err != nil {
 			return nil, err
 		}
+		// Downloads need an attachment response. For S3-compatible storage we can
+		// carry that disposition in the presigned URL; other providers fall back
+		// to the authenticated backend stream so the browser does not open images.
+		if (options.Download || resource.Kind == "file") && setting.Provider != s3Provider {
+			return &ResourceDelivery{Resource: resource}, nil
+		}
 		// S3 兼容 Endpoint 可能是私网服务；私网或 HTTP Endpoint 继续使用同源代理。
 		// 公开 HTTPS Endpoint（例如雨云 OSS）可安全签发短时预签名地址，避免
 		// 图片查看和下载绕回应用服务器传输对象内容。
 		if setting.Provider == s3Provider && !options.ForceDirect && !publicHTTPSStorageEndpoint(setting.Endpoint) {
 			return &ResourceDelivery{Resource: resource}, nil
 		}
-		if setting.Provider == qiniuKodoProvider && setting.CDNBaseURL != "" {
+		if setting.Provider == qiniuKodoProvider && setting.CDNBaseURL != "" && !options.Download && resource.Kind != "file" {
 			// 七牛私有空间即使配置了绑定域名，也不能匿名访问；必须使用
 			// Kodo 私有下载签名，否则浏览器会收到 NotSupportAnonymous。
 			redirectURL, err := signedOSSObjectURL(setting, resource.ObjectKey, time.Now().Add(directResourceURLTTL))
@@ -149,7 +156,7 @@ func (s *Service) prepareResourceDelivery(userID string, resource *model.Resourc
 			}
 			return &ResourceDelivery{Resource: resource, RedirectURL: redirectURL}, nil
 		}
-		if setting.CDNBaseURL != "" {
+		if setting.CDNBaseURL != "" && !options.Download && resource.Kind != "file" {
 			redirectURL, err := ossCDNObjectURL(setting.CDNBaseURL, resource.ObjectKey)
 			if err != nil {
 				return nil, err
@@ -164,7 +171,7 @@ func (s *Service) prepareResourceDelivery(userID string, resource *model.Resourc
 				}
 				return &ResourceDelivery{Resource: resource, RedirectURL: redirectURL}, nil
 			}
-			redirectURL, err := signedOSSObjectURL(setting, resource.ObjectKey, time.Now().Add(directResourceURLTTL))
+			redirectURL, err := signedOSSObjectURLForDownload(setting, resource.ObjectKey, time.Now().Add(directResourceURLTTL), options.Download || resource.Kind == "file")
 			if err != nil {
 				return nil, err
 			}
@@ -1171,6 +1178,13 @@ func signedOSSObjectURL(setting ossSettingValue, objectKey string, expiresAt tim
 		return signedCOSObjectURL(setting, objectKey, expiresAt)
 	}
 	return signedAliyunOSSObjectURL(setting, objectKey, expiresAt)
+}
+
+func signedOSSObjectURLForDownload(setting ossSettingValue, objectKey string, expiresAt time.Time, download bool) (string, error) {
+	if download && normalizeOSSSetting(setting).Provider == s3Provider {
+		return signedS3ObjectURL(setting, objectKey, expiresAt, true)
+	}
+	return signedOSSObjectURL(setting, objectKey, expiresAt)
 }
 
 func signedAliyunOSSObjectURL(setting ossSettingValue, objectKey string, expiresAt time.Time) (string, error) {

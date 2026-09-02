@@ -683,6 +683,21 @@ func TestPrepareResourceDeliveryUsesDirectURLForPublicS3Endpoint(t *testing.T) {
 	if delivery.RedirectURL == "" || !strings.Contains(delivery.RedirectURL, "X-Amz-Signature=") || delivery.Resource == nil {
 		t.Fatalf("PrepareResourceDelivery() = %#v, want a direct S3 URL", delivery)
 	}
+	download, err := svc.PrepareResourceDelivery("user-1", resource.ID, ResourceDeliveryOptions{Download: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if download.RedirectURL == "" || urlQueryValue(download.RedirectURL, "response-content-disposition") != "attachment" {
+		t.Fatalf("download delivery = %#v, want attachment disposition", download)
+	}
+}
+
+func urlQueryValue(rawURL string, key string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return parsed.Query().Get(key)
 }
 
 func TestNormalizeSingleByteRange(t *testing.T) {
