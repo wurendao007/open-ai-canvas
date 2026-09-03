@@ -154,7 +154,7 @@ description: 影策后端核心持久化表与状态边界
 
 `resources.upload_key` 保存客户端 `X-Idempotency-Key` 的 SHA-256 摘要。相同用户重复提交同一逻辑上传时复用已有资源；失败重试继续使用原对象路径，避免对象存储已经接收请求但响应丢失时产生第二份物理对象。未提供幂等标识的后台生成资源保持 `NULL`，不参与该唯一约束。
 
-资源文件接口 `GET /api/resources/:id/file` 负责鉴权后选择资源出口；增加查询参数 `download=1` 时返回附件语义。S3 直连会把 `response-content-disposition=attachment` 写入预签名地址，其他存储类型由后端流式返回并设置 `Content-Disposition: attachment`；普通预览不带该参数，继续按媒体类型展示。
+资源文件接口 `GET /api/resources/:id/file` 负责鉴权后选择资源出口；增加查询参数 `download=1` 时返回附件语义。公开 HTTPS 的 S3 兼容存储会把 `response-content-disposition=attachment` 写入预签名地址并重定向，其他存储类型由后端流式返回并设置 `Content-Disposition: attachment`；普通预览不带该参数，继续按媒体类型展示。`GET /api/resources/:id/direct-url` 在鉴权和资源归属校验后返回五分钟有效的短时直连地址，供图片、视频、音频按需读取；该响应禁止缓存，本地资源则继续使用带登录态的同源文件接口。只有需要读取 Blob 且对象存储未开放 CORS 时，前端才显式请求 `proxy=1` 由后端中转。
 
 个人画布中的图片、视频和音频采用 `Asset -> Resource` 所有权约束：前端先提交素材，再提交带 `assetId` 的画布节点或时间线直连媒体；后端保存画布前校验资源属于当前用户、状态为 `ready`、素材存在且引用同一资源。素材更新、全量替换和删除也会反向检查已有画布，不能把仍在使用的资源从素材库中移除或替换成其他资源。登录历史账号时，前端会按资源键补建缺失素材并回写 `assetId`。这项修复复用现有表和 Outbox，不新增结构迁移。
 

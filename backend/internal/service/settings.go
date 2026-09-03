@@ -52,6 +52,7 @@ type OSSSettingRequest struct {
 
 type PublicOSSSetting struct {
 	Enabled                 bool       `json:"enabled"`
+	StorageMode             string     `json:"storageMode"`
 	Provider                string     `json:"provider"`
 	Region                  string     `json:"region"`
 	Endpoint                string     `json:"endpoint"`
@@ -196,6 +197,10 @@ func (s *Service) UserOSSSetting(actor *model.User) (*PublicOSSSetting, error) {
 	if err != nil {
 		return nil, err
 	}
+	public.StorageMode, err = s.effectiveResourceStorageMode(actor.ID)
+	if err != nil {
+		return nil, err
+	}
 	return &public, nil
 }
 
@@ -250,6 +255,10 @@ func (s *Service) UpdateUserOSSSetting(actor *model.User, req OSSSettingRequest)
 		}
 	}
 	public, err := s.publicUserOSSSetting(&setting, next, actor.ID, platform.AllowUserS3)
+	if err != nil {
+		return nil, err
+	}
+	public.StorageMode, err = s.effectiveResourceStorageMode(actor.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -690,6 +699,7 @@ func defaultOSSSetting() ossSettingValue {
 func (s *Service) publicOSSSetting(setting *model.SystemSetting, value ossSettingValue, scope string, ownerID string) (PublicOSSSetting, error) {
 	result := PublicOSSSetting{
 		Enabled:            value.Enabled,
+		StorageMode:        storageModeFromEnabled(value.Enabled),
 		Provider:           value.Provider,
 		Region:             value.Region,
 		Endpoint:           value.Endpoint,
@@ -719,6 +729,7 @@ func (s *Service) publicOSSSetting(setting *model.SystemSetting, value ossSettin
 func (s *Service) publicUserOSSSetting(setting *model.UserOSSSetting, value ossSettingValue, ownerID string, allowUserS3 bool) (PublicOSSSetting, error) {
 	result := PublicOSSSetting{
 		Enabled:            value.Enabled,
+		StorageMode:        storageModeFromEnabled(value.Enabled),
 		Provider:           value.Provider,
 		Region:             value.Region,
 		Endpoint:           value.Endpoint,
@@ -746,6 +757,13 @@ func (s *Service) publicUserOSSSetting(setting *model.UserOSSSetting, value ossS
 		return PublicOSSSetting{}, err
 	}
 	return result, nil
+}
+
+func storageModeFromEnabled(enabled bool) string {
+	if enabled {
+		return "oss"
+	}
+	return "local"
 }
 
 func storageLocationDigest(value ossSettingValue) string {

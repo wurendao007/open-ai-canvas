@@ -27,6 +27,9 @@ func TestS3ObjectOperationsUsePathStyleSessionTokenAndNoManagedHeaders(t *testin
 		}
 		switch r.Method {
 		case http.MethodPut:
+			if r.Header.Get("Cache-Control") != immutableResourceCacheControl {
+				t.Errorf("Cache-Control = %q", r.Header.Get("Cache-Control"))
+			}
 			data, _ := io.ReadAll(r.Body)
 			if string(data) != "payload" {
 				t.Errorf("body = %q", data)

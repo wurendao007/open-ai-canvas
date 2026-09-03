@@ -3,8 +3,7 @@ import { Pause, Play } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { resolveMediaUrl } from "@/services/file-storage";
-import { cacheResourceObjectUrl } from "@/services/resource-blob-cache";
-import { resourceIdFromStorageKey } from "@/services/api/resources";
+import { resourceFallbackUrl, resourceIdFromFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
 import { formatTimelineTime } from "@/lib/timeline/timeline-view";
 import { createDefaultSubtitleStyle } from "@/types/timeline";
 import type { TimelineClip } from "@/types/timeline";
@@ -34,6 +33,7 @@ const AUTO_ADVANCE_GAP_MS = 500;
 export function CanvasTimelinePreview({ clips, nodes, playheadMs, playing, theme, onTogglePlay, onPlayheadChange }: CanvasTimelinePreviewProps) {
     const videoRef = useRef<HTMLVideoElement>(null);
     const [videoUrl, setVideoUrl] = useState("");
+    const [videoError, setVideoError] = useState(false);
     const [videoSize, setVideoSize] = useState<{ width: number; height: number } | null>(null);
     // 源内定位目标（秒）；视频换源后 metadata 尚未加载时先记录，loadedmetadata 后再应用。
     const targetSeekSecRef = useRef<number | null>(null);
@@ -55,30 +55,23 @@ export function CanvasTimelinePreview({ clips, nodes, playheadMs, playing, theme
         const media = activeVideoClip?.directMedia;
         setVideoUrl("");
         setVideoSize(null);
+        setVideoError(false);
         if (!node && !media) return;
         let cancelled = false;
-        // 直连媒体片段（directMedia，不落画布）与画布节点走同一套缓存/回退解析策略
+        // 直连媒体片段（directMedia，不落画布）与画布节点走同一套 URL 解析策略。
+        // 视频正文保留 Range 流式播放，不在时间线预览中整段写入 IndexedDB。
         const storageKey = node?.metadata?.storageKey || media?.storageKey || "";
         const fallback = node?.metadata?.content || media?.url || "";
+        const resourceId = resourceIdFromStorageKey(storageKey) || resourceIdFromFileUrl(fallback);
+        const safeFallback = resourceId ? resourceFallbackUrl(resourceId, fallback) : fallback;
         const applyUrl = (url: string) => {
             if (!cancelled) setVideoUrl(url);
         };
-        if (resourceIdFromStorageKey(storageKey)) {
-            void cacheResourceObjectUrl(storageKey)
-                .then((cached) => {
-                    if (cancelled) return;
-                    if (cached) {
-                        setVideoUrl(cached);
-                    } else {
-                        void resolveMediaUrl(storageKey, fallback).then(applyUrl);
-                    }
-                })
-                .catch(() => {
-                    if (!cancelled) void resolveMediaUrl(storageKey, fallback).then(applyUrl);
-                });
-        } else {
-            void resolveMediaUrl(storageKey, fallback).then(applyUrl);
-        }
+        void resolveMediaUrl(storageKey, safeFallback)
+            .then(applyUrl)
+            .catch(() => {
+                if (!cancelled) setVideoError(true);
+            });
         return () => {
             cancelled = true;
         };
@@ -148,7 +141,7 @@ export function CanvasTimelinePreview({ clips, nodes, playheadMs, playing, theme
                 {videoUrl && activeVideoClip ? (
                     <>
                         <div className="relative" style={previewDisplay ? { width: previewDisplay.width, height: previewDisplay.height } : { width: "100%", height: "100%" }}>
-                            <video ref={videoRef} className="block h-full w-full" src={videoUrl} playsInline preload="metadata" onLoadedMetadata={(event) => handleVideoLoadedMetadata(event.currentTarget)} onTimeUpdate={handleTimeUpdate} />
+                            <video ref={videoRef} className="block h-full w-full" src={videoUrl} playsInline preload="metadata" onLoadedMetadata={(event) => handleVideoLoadedMetadata(event.currentTarget)} onTimeUpdate={handleTimeUpdate} onError={() => { setVideoError(true); setVideoUrl(""); }} />
                             {activeSubtitleClip ? <CanvasSubtitleOverlay text={activeSubtitleClip.text || ""} highlight={activeHighlight} style={subtitleStyle} /> : null}
                         </div>
                         <button
@@ -166,7 +159,7 @@ export function CanvasTimelinePreview({ clips, nodes, playheadMs, playing, theme
                         </button>
                     </>
                 ) : (
-                    <div className="px-4 text-center text-xs opacity-55">该位置无视频片段</div>
+                    <div className="px-4 text-center text-xs opacity-55">{videoError ? "视频预览加载失败，请检查素材是否仍然可用" : "该位置无视频片段"}</div>
                 )}
             </div>
             <div className="min-w-0 flex-1">

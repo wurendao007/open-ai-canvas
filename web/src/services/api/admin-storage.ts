@@ -89,6 +89,13 @@ export function adminResourceFileUrl(id: string, download = false) {
     return `${base}/admin/resources/${encodeURIComponent(id)}/file${download ? "?download=1" : ""}`;
 }
 
+export async function getAdminResourceDirectUrl(id: string) {
+    const result = await request<{ url: string; proxy?: boolean }>(apiClient.get(`/admin/resources/${encodeURIComponent(id)}/direct-url`));
+    if (result.proxy) return adminResourceFileUrl(id);
+    if (!result.url) throw new Error("后端未返回对象存储地址");
+    return result.url;
+}
+
 export async function downloadAdminResource(resource: AdminStorageResource) {
     const response = await fetch(adminResourceFileUrl(resource.id, true), { credentials: "include" });
     if (!response.ok) {

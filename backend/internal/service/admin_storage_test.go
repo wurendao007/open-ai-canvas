@@ -106,4 +106,7 @@ func TestAdminStorageRejectsNonAdminAndInvalidFilters(t *testing.T) {
 	if _, err := svc.AdminStorageStats(user); err == nil {
 		t.Fatal("expected non-admin stats to be rejected")
 	}
+	if _, _, err := svc.DirectResourceURLAsAdmin(user, "resource"); err == nil {
+		t.Fatal("expected non-admin direct URL access to be rejected")
+	}
 }

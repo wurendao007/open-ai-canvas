@@ -7,7 +7,8 @@ import { useSearchParams } from "react-router";
 
 import { PaginationBar } from "@/components/layout/workspace-page";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
-import { adminResourceFileUrl, deleteAdminResources, downloadAdminResource, getAdminStorageStats, listAdminResources, type AdminStorageResource, type AdminStorageStats } from "@/services/api/admin-storage";
+import { deleteAdminResources, downloadAdminResource, getAdminResourceDirectUrl, getAdminStorageStats, listAdminResources, type AdminStorageResource, type AdminStorageStats } from "@/services/api/admin-storage";
+import { ResolvedResourceAudioSource, ResolvedResourceVideoSource } from "@/components/resolved-resource-video";
 import { AdminBatchBar, AdminDataTable, AdminFilterChip, AdminStatTile, AdminStatusBadge, AdminTableEmpty } from "./admin-ui";
 
 const pageSizes = [20, 50, 100];
@@ -299,13 +300,31 @@ function DeleteBlockedSummary({ blocked }: { blocked: Array<{ id: string; reason
 }
 
 function ResourcePreview({ resource }: { resource: AdminStorageResource }) {
-    const url = adminResourceFileUrl(resource.id);
+    const [url, setUrl] = useState("");
+    const [failed, setFailed] = useState(false);
+    useEffect(() => {
+        let cancelled = false;
+        setUrl("");
+        setFailed(false);
+        void getAdminResourceDirectUrl(resource.id)
+            .then((next) => {
+                if (!cancelled) setUrl(next);
+            })
+            .catch(() => {
+                if (!cancelled) setFailed(true);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [resource.id]);
+    if (failed) return <div className="py-12 text-center text-sm text-foreground/45">预览不可用，资源可能已删除或对象存储暂时不可达。</div>;
+    if (!url) return <div className="py-12 text-center text-sm text-foreground/45">正在加载预览…</div>;
     if (resource.kind === "image" || resource.mimeType.startsWith("image/")) return <img className="mx-auto max-h-[65vh] max-w-full object-contain" src={url} alt={fileName(resource.objectKey) || "资源预览"} />;
-    if (resource.kind === "video" || resource.mimeType.startsWith("video/")) return <video className="mx-auto max-h-[65vh] max-w-full bg-black" src={url} controls playsInline />;
+    if (resource.kind === "video" || resource.mimeType.startsWith("video/")) return <ResolvedResourceVideoSource className="mx-auto max-h-[65vh] max-w-full bg-black" src={url} controls playsInline />;
     if (resource.kind === "audio" || resource.mimeType.startsWith("audio/"))
         return (
             <div className="py-12">
-                <audio className="w-full" src={url} controls />
+                <ResolvedResourceAudioSource className="w-full" src={url} controls />
             </div>
         );
     return <div className="rounded-md border border-border bg-muted/20 px-5 py-10 text-center text-sm text-foreground/55">该文件类型不支持内嵌预览，请下载后查看。</div>;

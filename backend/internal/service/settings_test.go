@@ -36,7 +36,7 @@ func TestMissingOSSSettingsReturnNormalizedDefaults(t *testing.T) {
 
 func assertDefaultOSSSetting(t *testing.T, value *PublicOSSSetting) {
 	t.Helper()
-	if value.Provider != aliyunOSSProvider || value.PathPrefix != defaultOSSPathPrefix || value.S3Preset != "custom" {
+	if value.Provider != aliyunOSSProvider || value.PathPrefix != defaultOSSPathPrefix || value.S3Preset != "custom" || value.StorageMode != "local" {
 		t.Fatalf("default OSS setting = %+v", value)
 	}
 }

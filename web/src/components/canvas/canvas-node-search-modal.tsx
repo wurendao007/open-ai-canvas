@@ -7,6 +7,8 @@ import { canvasNodeMaterialSummary, canvasNodeSearchContext, canvasNodeSearchTim
 import { canvasNodeVideoPreviewUrl } from "@/lib/canvas/canvas-media-preview";
 import { getNodeListLabel } from "@/lib/canvas/node-registry";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
+import { CachedResourceImage } from "@/components/cached-resource-image";
+import { resourceIdFromFileUrl, resourceIdFromStorageKey, resourceStorageKey } from "@/services/api/resources";
 
 const RESULT_LIST_ID = "canvas-node-search-results";
 
@@ -133,6 +135,8 @@ function CanvasNodeSearchThumbnail({ node }: { node: CanvasNodeData }) {
     const commonStyle = { borderColor: "color-mix(in srgb, var(--foreground) 9%, transparent)", background: "color-mix(in srgb, var(--foreground) 5%, transparent)" };
 
     if (mediaSource && !failed) {
+        const resourceId = resourceIdFromStorageKey(node.metadata?.storageKey) || resourceIdFromFileUrl(mediaSource);
+        if (resourceId) return <CachedResourceImage storageKey={resourceStorageKey(resourceId)} src={mediaSource} alt="" width={64} height={44} loading="lazy" decoding="async" className={commonClass} style={commonStyle} onError={() => setFailed(true)} />;
         return <img src={mediaSource} alt="" width={64} height={44} loading="lazy" decoding="async" className={commonClass} style={commonStyle} onError={() => setFailed(true)} />;
     }
 

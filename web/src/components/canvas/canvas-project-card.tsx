@@ -7,7 +7,7 @@ import { useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-s
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
-import { resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
+import { resourceFileUrl, resourceIdFromFileUrl, resourceIdFromStorageKey, resourceStorageKey } from "@/services/api/resources";
 import { resolveBackendApiUrl } from "@/stores/use-config-store";
 import { CachedResourceImage } from "@/components/cached-resource-image";
 import { cn } from "@/lib/utils";
@@ -226,7 +226,8 @@ export function projectPreviewMedia(nodes: CanvasNodeData[], preferLatestImage =
             if (node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video) continue;
             const url = getNodeMediaUrl(node);
             if (!isPreviewUrl(url)) continue;
-            const media = { node, url, storageKey: node.metadata?.storageKey };
+            const resourceId = resourceIdFromStorageKey(node.metadata?.storageKey) || resourceIdFromFileUrl(url);
+            const media = { node, url, storageKey: resourceId ? resourceStorageKey(resourceId) : node.metadata?.storageKey };
             firstMedia ||= media;
             latestMedia = media;
             if (node.type === CanvasNodeType.Image) {

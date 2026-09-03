@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Button, Image, Modal } from "antd";
 import { XCircle } from "lucide-react";
 
@@ -7,6 +8,9 @@ import { formatTaskLog, type GenerationTask, type TaskLog } from "@/services/api
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { VideoPlayer } from "@/components/video-player";
 import { modelDisplayName, useEffectiveConfig } from "@/stores/use-config-store";
+import { ResolvedResourceVideoSource } from "@/components/resolved-resource-video";
+import { resourceFallbackUrl, resourceIdFromFileUrl, resourceIdFromStorageKey, resourceStorageKey } from "@/services/api/resources";
+import { resolveImageUrl } from "@/services/image-storage";
 
 type CanvasProjectStatusDialogsProps = {
     theme: { node: { stroke: string; panel: string; muted: string; fill: string } };
@@ -83,25 +87,11 @@ export function CanvasProjectStatusDialogs({ theme, task, taskLogs, taskLoading,
                 styles={{ body: { padding: 0, display: "flex", justifyContent: "center", alignItems: "center", maxHeight: "84vh", overflow: "hidden", background: "#090909" } }}
             >
                 {previewNode?.metadata?.content && previewNode.type === CanvasNodeType.Video ? (
-                    <VideoPlayer src={previewNode.metadata.content} mimeType={previewNode.metadata.mimeType} title={previewNode.title || "视频预览"} hasAudio={typeof previewNode.metadata.hasAudio === "boolean" ? previewNode.metadata.hasAudio : undefined} className="max-h-[84vh] max-w-full bg-black" />
+                    <ResolvedResourceVideoSource src={previewNode.metadata.content} storageKey={previewNode.metadata.storageKey} fallback={previewNode.metadata.content} controls className="max-h-[84vh] max-w-full bg-black" />
                 ) : null}
             </Modal>
 
-            {previewNode?.metadata?.content && previewNode.type === CanvasNodeType.Image ? (
-                <Image
-                    src={previewNode.metadata.content}
-                    alt={previewNode.title || "图片"}
-                    style={{ display: "none" }}
-                    preview={{
-                        open: true,
-                        movable: true,
-                        minScale: 0.5,
-                        maxScale: 12,
-                        scaleStep: 0.25,
-                        onOpenChange: (open) => !open && onClosePreview(),
-                    }}
-                />
-            ) : null}
+            {previewNode?.metadata?.content && previewNode.type === CanvasNodeType.Image ? <CanvasImagePreview node={previewNode} onClose={onClosePreview} /> : null}
 
             <Modal
                 title="清空画布？"
@@ -120,6 +110,49 @@ export function CanvasProjectStatusDialogs({ theme, task, taskLogs, taskLoading,
                 <p className="text-sm opacity-60">这会删除当前画布上的所有节点和连线。</p>
             </Modal>
         </>
+    );
+}
+
+function CanvasImagePreview({ node, onClose }: { node: CanvasNodeData; onClose: () => void }) {
+    const fallback = node.metadata?.content || "";
+    const storageKey = node.metadata?.storageKey;
+    const resourceId = resourceIdFromStorageKey(storageKey) || resourceIdFromFileUrl(fallback);
+    const safeFallback = resourceId ? resourceFallbackUrl(resourceId, fallback) : fallback;
+    const [source, setSource] = useState("");
+
+    useEffect(() => {
+        let cancelled = false;
+        setSource("");
+        // Warm the same user-scoped Blob cache used by the canvas node before
+        // opening the preview, so the modal does not mount a second raw
+        // /api/resources request for an already stored image.
+        void resolveImageUrl(storageKey, safeFallback, { cacheMiss: true, proxyFallback: false })
+            .then((url) => {
+                if (!cancelled) setSource(url || safeFallback);
+            })
+            .catch(() => {
+                if (!cancelled) setSource(safeFallback);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [fallback, safeFallback, storageKey]);
+
+    if (!source) return null;
+    return (
+        <Image
+            src={source}
+            alt={node.title || "图片"}
+            style={{ display: "none" }}
+            preview={{
+                open: true,
+                movable: true,
+                minScale: 0.5,
+                maxScale: 12,
+                scaleStep: 0.25,
+                onOpenChange: (open) => !open && onClose(),
+            }}
+        />
     );
 }
 

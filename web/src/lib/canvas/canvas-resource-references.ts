@@ -4,6 +4,7 @@ import { getNodeResourceKind } from "@/lib/canvas/node-registry";
 import { seedanceReferenceLabel } from "@/lib/seedance-video";
 import type { Skill } from "@/services/api/skills";
 import type { Asset, AssetCategory } from "@/stores/use-asset-store";
+import { resourceIdFromFileUrl, resourceIdFromStorageKey, resourceStorageKey } from "@/services/api/resources";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasNodeTypeId } from "@/types/canvas";
 
 export type CanvasResourceKind = "image" | "video" | "audio" | "text" | "skill" | "character";
@@ -57,6 +58,8 @@ export function buildAssetMentionReferences(assets: Asset[]): CanvasResourceRefe
         const kind: CanvasResourceKind = asset.kind === "entity" ? "character" : asset.kind;
         const previewUrl = asset.kind === "image" ? asset.data.dataUrl : asset.kind === "video" ? canvasVideoAssetPreviewUrl(asset.data.url, asset.coverUrl) : asset.coverUrl;
         const text = asset.kind === "text" ? asset.data.content : undefined;
+        const resourceId = resourceIdFromFileUrl(previewUrl) || resourceIdFromFileUrl(asset.kind === "video" ? asset.data.url : "");
+        const storageKey = "storageKey" in asset.data ? asset.data.storageKey : resourceId ? resourceStorageKey(resourceId) : undefined;
         return [{
             id: `asset:${asset.id}`,
             nodeId: "",
@@ -66,7 +69,7 @@ export function buildAssetMentionReferences(assets: Asset[]): CanvasResourceRefe
             title: asset.title,
             previewUrl,
             mediaUrl: asset.kind === "video" && !previewUrl ? asset.data.url : undefined,
-            storageKey: "storageKey" in asset.data ? asset.data.storageKey : undefined,
+            storageKey,
             text,
             active: false,
             category: asset.category || "other",
@@ -186,6 +189,15 @@ function labelResourceNodes(nodes: CanvasNodeData[], active: boolean) {
         if (!kind) return [];
         const index = node.type === CanvasNodeType.Drawing ? drawingCount++ : counts[kind]++;
         const label = node.type === CanvasNodeType.Drawing ? `绘图${index + 1}` : labelForKind(kind, index);
+        const previewUrl = node.metadata?.workflowKind === "character"
+            ? node.metadata.characterCoverUrl
+            : node.type === CanvasNodeType.Drawing
+              ? node.metadata?.drawingPreviewUrl
+              : node.type === CanvasNodeType.Video
+                ? canvasNodeVideoPreviewUrl(node)
+                : node.metadata?.previewContent || node.metadata?.content;
+        const resourceId = resourceIdFromStorageKey(node.metadata?.storageKey) || resourceIdFromFileUrl(previewUrl);
+        const storageKey = node.metadata?.storageKey || (resourceId ? resourceStorageKey(resourceId) : undefined);
         return [
             {
                 id: node.id,
@@ -193,14 +205,8 @@ function labelResourceNodes(nodes: CanvasNodeData[], active: boolean) {
                 kind,
                 label,
                 title: node.title || label,
-                previewUrl: node.metadata?.workflowKind === "character"
-                    ? node.metadata.characterCoverUrl
-                    : node.type === CanvasNodeType.Drawing
-                      ? node.metadata?.drawingPreviewUrl
-                      : node.type === CanvasNodeType.Video
-                        ? canvasNodeVideoPreviewUrl(node)
-                        : node.metadata?.previewContent || node.metadata?.content,
-                storageKey: node.metadata?.storageKey,
+                previewUrl,
+                storageKey,
                 previewStorageKey: node.type === CanvasNodeType.Video ? node.metadata?.videoPreview?.storageKey : undefined,
                 text: node.metadata?.workflowKind === "character" ? node.metadata.characterPrompt : node.type === CanvasNodeType.Text ? node.metadata?.content || node.metadata?.prompt : node.type === CanvasNodeType.Skill ? skillResourceText(node) : undefined,
                 active,

@@ -2,7 +2,7 @@ import { getFeatureAvailability, type AuthSessionPayload } from "@/services/api/
 import { getModelCatalog, listLogicalModels, type CapabilitySpec, type ModelCatalogResponse, type OptionConstraint, type PublicChannelCatalog, type PublicLogicalModel } from "@/services/api/logical-models";
 import { localForageStorage } from "@/lib/localforage-storage";
 import { appQueryClient } from "@/lib/query-client";
-import { scopedLocalStorage, setActiveUserScope } from "@/lib/user-scope";
+import { getActiveUserScope, scopedLocalStorage, setActiveUserScope } from "@/lib/user-scope";
 import { CANVAS_STORE_KEY, flushCanvasStorePersistence, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { CANVAS_HISTORY_STORE_KEY, useCanvasHistoryStore } from "@/stores/canvas/use-canvas-history-store";
 import { ASSET_STORE_KEY, flushAssetStorePersistence, useAssetStore } from "@/stores/use-asset-store";
@@ -12,12 +12,23 @@ import { useUserStore } from "@/stores/use-user-store";
 import { PLUGIN_STORE_KEY, usePluginStore } from "@/stores/use-plugin-store";
 import { installRemoteUserDataAutoSync, resetRemoteUserDataSync, syncRemoteUserData, withRemoteUserDataSyncExclusive } from "@/services/user-data-sync";
 import { withGenerationConsumersPaused } from "@/services/generation-consumer-lifecycle";
+import { clearResourceClientCaches } from "@/services/api/resources";
+import { clearResourceBlobCache } from "@/services/resource-blob-cache";
+import { clearFileStorageObjectUrls } from "@/services/file-storage";
+import { clearImageStorageObjectUrls } from "@/services/image-storage";
 
 export async function switchUserStorageScope(userId?: string | null) {
     await withGenerationConsumersPaused(async () => {
         await withRemoteUserDataSyncExclusive(async () => {
             await Promise.all([flushCanvasStorePersistence(), flushAssetStorePersistence()]);
             resetRemoteUserDataSync();
+            const nextScope = userId || "guest";
+            if (getActiveUserScope() !== nextScope) {
+                clearResourceClientCaches();
+                clearResourceBlobCache();
+                clearFileStorageObjectUrls();
+                clearImageStorageObjectUrls();
+            }
             setActiveUserScope(userId);
         });
     });

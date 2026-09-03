@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { resolveImageUrl } from "@/services/image-storage";
+import { resourceFallbackUrl, resourceIdFromStorageKey } from "@/services/api/resources";
 
 type ResolvedPreview = {
     identity: string;
@@ -67,8 +68,10 @@ function resolveReferencePreview(reference: CanvasResourceReference, identity: s
     const cached = previewPromiseCache.get(identity);
     if (cached) return cached;
     const storageKey = reference.kind === "video" ? reference.previewStorageKey : reference.storageKey;
-    const pending = resolveImageUrl(storageKey, reference.previewUrl || "", { cacheMiss: true })
-        .catch(() => reference.previewUrl || "")
+    const resourceId = resourceIdFromStorageKey(storageKey);
+    const fallback = resourceId ? resourceFallbackUrl(resourceId, reference.previewUrl || "") : reference.previewUrl || "";
+    const pending = resolveImageUrl(storageKey, fallback, { cacheMiss: true, proxyFallback: false })
+        .catch(() => fallback)
         .then((url) => {
             if (!url) previewPromiseCache.delete(identity);
             return url;

@@ -22,7 +22,7 @@ import { saveCanvasDrawing, type CanvasDrawingRenderDraft } from "@/lib/canvas/c
 import { createCanvasProjectWithRemoteSync, hasRemoteUserDataSyncSession, saveRemoteUserDataNow, scheduleRemoteUserDataSync } from "@/services/user-data-sync";
 import { listProjects } from "@/services/api/projects";
 import { loadCanvasProjectPage } from "@/lib/workspace-route-modules";
-import { resourceFileUrl, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
+import { getResourceStorageMode, resourceFileUrl, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
 import { primeResourceBlobCache } from "@/services/resource-blob-cache";
 import { useSyncProgressStore } from "@/stores/use-sync-progress-store";
 import { ensureCanvasNodeAsset } from "@/services/project-asset-sync";
@@ -156,6 +156,7 @@ export default function CanvasPage() {
                 }
 
                 try {
+                    const storageMode = await getResourceStorageMode();
                     const storageKeyMap = new Map<string, { storageKey: string; url: string }>();
                     const concurrency = 4;
                     let fileIndex = 0;
@@ -172,9 +173,12 @@ export default function CanvasPage() {
                                 const resource = await uploadResourceFile(typedBlob, kind, { fileName: fileItem.path.split("/").pop() });
                                 const newStorageKey = resourceStorageKey(resource.id);
                                 const newUrl = resourceFileUrl(resource.id);
-                                await primeResourceBlobCache(newStorageKey, typedBlob).catch(() => "");
+                                if (kind === "image") await primeResourceBlobCache(newStorageKey, typedBlob).catch(() => "");
                                 storageKeyMap.set(fileItem.storageKey, { storageKey: newStorageKey, url: newUrl });
                             } catch (uploadErr) {
+                                if (storageMode === "oss") {
+                                    throw new Error(uploadErr instanceof Error ? `对象存储上传失败：${uploadErr.message}` : "对象存储上传失败，请重试");
+                                }
                                 console.warn("上传资源到后端失败，降级保存本地", uploadErr);
                                 const localUrl = await (fileItem.storageKey.startsWith("image:") ? setImageBlob(fileItem.storageKey, typedBlob) : setMediaBlob(fileItem.storageKey, typedBlob));
                                 if (localUrl) {

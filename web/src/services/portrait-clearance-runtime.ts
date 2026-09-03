@@ -1,4 +1,4 @@
-import { resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
+import { getResourceBlob, resourceIdFromFileUrl, resourceIdFromStorageKey, resourceStorageKey } from "@/services/api/resources";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { LocalRuntimeClientError } from "@/services/local-runtime-session";
 import type { LocalRuntimeTransport } from "@/services/local-runtime";
@@ -149,16 +149,22 @@ export async function portraitOwnerScopeHash() {
 
 export async function imageNodeDataUrl(node: CanvasNodeData, signal?: AbortSignal): Promise<{ dataUrl: string; mimeType: "image/jpeg" | "image/png" | "image/webp"; fileName: string }> {
     const source = node.metadata?.content || node.metadata?.previewContent;
-    const storageId = node.metadata?.storageKey ? resourceIdFromStorageKey(node.metadata.storageKey) : undefined;
-    const storageUrl = storageId ? resourceFileUrl(storageId) : undefined;
-    const value = source || storageUrl;
-    if (!value) throw new Error("portrait_input_invalid");
-    const response = await fetchImage(value, signal);
+    const storageId = (node.metadata?.storageKey ? resourceIdFromStorageKey(node.metadata.storageKey) : "") || resourceIdFromFileUrl(source);
+    const response = storageId
+        ? await resourceBlobResponse(resourceStorageKey(storageId), signal)
+        : await fetchImage(source || "", signal);
     const mimeType = imageMime(response.headers.get("content-type") || response.type, node.metadata?.mimeType);
     const bytes = new Uint8Array(await response.arrayBuffer());
     if (!bytes.byteLength || bytes.byteLength > 12 * 1024 * 1024) throw new Error("单张肖像排查图片不能超过 12MB");
     const dataUrl = `data:${mimeType};base64,${bytesToBase64(bytes)}`;
     return { dataUrl, mimeType, fileName: node.title || `${node.id}.${mimeType === "image/jpeg" ? "jpg" : mimeType.slice("image/".length)}` };
+}
+
+async function resourceBlobResponse(storageKey: string, signal?: AbortSignal) {
+    if (signal?.aborted) throw new DOMException("读取资源已取消", "AbortError");
+    const blob = await getResourceBlob(storageKey, { signal });
+    if (!blob) throw new Error("portrait_input_invalid");
+    return new Response(blob, { headers: { "content-type": blob.type || "application/octet-stream" } });
 }
 
 async function requestJson<T = unknown>(path: string, init: RequestInit = {}) {

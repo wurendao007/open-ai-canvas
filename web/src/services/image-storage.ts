@@ -3,7 +3,7 @@ import localforage from "localforage";
 import { nanoid } from "nanoid";
 import { readImageMeta } from "@/lib/image-utils";
 import { getActiveUserScope } from "@/lib/user-scope";
-import { importResourceFromUrl, isResourceUrl, resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
+import { getResourceDirectUrl, getResourceStorageMode, importResourceFromUrl, isResourceUrl, resourceFallbackUrl, resourceFileUrl, resourceIdFromFileUrl, resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
 import { cacheResourceObjectUrl, getCachedResourceBlob, getCachedResourceObjectUrl, primeResourceBlobCache } from "@/services/resource-blob-cache";
 
 export type UploadedImage = {
@@ -19,9 +19,10 @@ const store = localforage.createInstance({ name: "infinite-canvas", storeName: "
 const objectUrls = new Map<string, string>();
 
 export async function uploadImage(input: string | Blob): Promise<UploadedImage> {
-    // 同一个逻辑上传在直传失败后会退回 IndexedDB，并由云端数据同步再次提交。
+    // 本地模式下直传失败可暂存 IndexedDB，并由云端数据同步再次提交。
     // 提前生成本地 key，确保两条路径向后端发送相同的幂等标识。
     const storageKey = `image:${getActiveUserScope()}:${nanoid()}`;
+    const storageMode = await getResourceStorageMode();
     if (typeof input === "string" && shouldImportRemoteImage(input)) {
         try {
             const resource = await importResourceFromUrl(input, "image", { idempotencyKey: storageKey });
@@ -34,12 +35,19 @@ export async function uploadImage(input: string | Blob): Promise<UploadedImage> 
                 mimeType: resource.mimeType || "image/png",
             };
         } catch {
-            // Keep the browser-side path as a fallback for CORS-enabled HTTPS images.
+            // A browser-readable URL can still be uploaded as a Blob; the final
+            // persistence path remains governed by the effective storage mode.
         }
     }
-    const blob = typeof input === "string" ? await (await fetch(input)).blob() : input;
+    const blob = typeof input === "string" ? await fetchImageBlob(input) : input;
     const previewUrl = URL.createObjectURL(blob);
-    const meta = await readImageMeta(previewUrl);
+    let meta: Awaited<ReturnType<typeof readImageMeta>>;
+    try {
+        meta = await readImageMeta(previewUrl);
+    } catch (error) {
+        URL.revokeObjectURL(previewUrl);
+        throw error;
+    }
     try {
         const resource = await uploadResourceFile(blob, "image", { width: meta.width, height: meta.height, fileName: input instanceof File ? input.name : undefined, idempotencyKey: storageKey });
         await primeResourceBlobCache(resourceStorageKey(resource.id), blob).catch(() => "");
@@ -52,8 +60,11 @@ export async function uploadImage(input: string | Blob): Promise<UploadedImage> 
             bytes: resource.size || blob.size,
             mimeType: resource.mimeType || blob.type || meta.mimeType,
         };
-    } catch {
-        // OSS is optional during local/self-hosted setup. Keep the existing local fallback.
+    } catch (error) {
+        if (storageMode === "oss") {
+            URL.revokeObjectURL(previewUrl);
+            throw new Error(error instanceof Error ? `对象存储上传失败：${error.message}` : "对象存储上传失败，请重试");
+        }
     }
     await store.setItem(storageKey, blob);
     const url = previewUrl;
@@ -65,18 +76,23 @@ function shouldImportRemoteImage(input: string) {
     return /^https?:\/\//i.test(input) && !isResourceUrl(input);
 }
 
-export async function resolveImageUrl(storageKey?: string, fallback = "", options?: { cacheMiss?: boolean }) {
-    if (!storageKey) return fallback;
-    const resourceId = resourceIdFromStorageKey(storageKey);
+export async function resolveImageUrl(storageKey?: string, fallback = "", options?: { cacheMiss?: boolean; preferDirect?: boolean; proxyFallback?: boolean; forceRefresh?: boolean }) {
+    const resourceId = resourceIdFromStorageKey(storageKey) || resourceIdFromFileUrl(fallback);
     if (resourceId) {
-        const cached = await getCachedResourceObjectUrl(storageKey).catch(() => "");
+        const remoteStorageKey = resourceStorageKey(resourceId);
+        const cached = await getCachedResourceObjectUrl(remoteStorageKey).catch(() => "");
         if (cached) return cached;
-        if (options?.cacheMiss) {
-            const populated = await cacheResourceObjectUrl(storageKey).catch(() => "");
+        // 普通预览应直接挂载签名地址。对未开启 CORS 的 OSS，先 fetch
+        // 再回退到 /file 会额外产生一次应用服务器到 OSS 的传输。
+        if (options?.cacheMiss && !options?.preferDirect) {
+            const populated = await cacheResourceObjectUrl(remoteStorageKey, { proxyFallback: options?.proxyFallback }).catch(() => "");
             if (populated) return populated;
         }
-        return resourceFileUrl(resourceId);
+        // Even the normal image fallback should skip /file. The API proxy is
+        // retained only when signing fails or the provider is unavailable.
+        return await getResourceDirectUrl(remoteStorageKey, { forceRefresh: options?.forceRefresh }).catch(() => resourceFallbackUrl(resourceId, fallback));
     }
+    if (!storageKey) return fallback;
     const cached = objectUrls.get(storageKey);
     if (cached) return cached;
     const blob = await store.getItem<Blob>(storageKey);
@@ -107,8 +123,8 @@ export async function imageToDataUrl(image: { url?: string; dataUrl?: string; st
     const url = image.dataUrl || (await resolveImageUrl(image.storageKey, image.url || ""));
     if (!url) return url;
     if (url.startsWith("data:image/")) return url;
-    if (url.startsWith("data:")) return blobToDataUrl(await normalizeImageBlob(await (await fetch(url)).blob(), image.name));
-    const blob = await (await fetch(url, { credentials: isResourceUrl(url) ? "include" : "same-origin" })).blob();
+    if (url.startsWith("data:")) return blobToDataUrl(await normalizeImageBlob(await fetchImageBlob(url), image.name));
+    const blob = await fetchImageBlob(url);
     return blobToDataUrl(await normalizeImageBlob(blob, image.name || url));
 }
 
@@ -122,6 +138,11 @@ export async function deleteStoredImages(keys: Iterable<string>) {
             await store.removeItem(key);
         }),
     );
+}
+
+export function clearImageStorageObjectUrls() {
+    objectUrls.forEach((url) => URL.revokeObjectURL(url));
+    objectUrls.clear();
 }
 
 export async function cleanupUnusedImages(usedData: unknown, scope = getActiveUserScope()) {
@@ -139,6 +160,12 @@ export function collectImageStorageKeys(value: unknown, keys = new Set<string>()
     if ("storageKey" in value && typeof value.storageKey === "string" && (value.storageKey.startsWith("image:") || value.storageKey.startsWith("generation-image:") || resourceIdFromStorageKey(value.storageKey))) keys.add(value.storageKey);
     Object.values(value).forEach((item) => (Array.isArray(item) ? item.forEach((child) => collectImageStorageKeys(child, keys)) : collectImageStorageKeys(item, keys)));
     return keys;
+}
+
+async function fetchImageBlob(url: string) {
+    const response = await fetch(url, { credentials: isResourceUrl(url) ? "include" : "same-origin" });
+    if (!response.ok) throw new Error(`读取图片失败（HTTP ${response.status}）`);
+    return response.blob();
 }
 
 function blobToDataUrl(blob: Blob) {

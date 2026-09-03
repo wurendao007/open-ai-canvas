@@ -63,7 +63,7 @@ export function CanvasProjectAssetModal({
                     kindLabel: character ? "角色卡" : (media?.kind || project?.mediaType) === "video" ? "视频" : (media?.kind || project?.mediaType) === "audio" ? "音频" : (media?.kind || project?.mediaType) === "text" ? "文本" : "图片",
                     asset: media,
                     imageUrl: coverRepresentation ? resourceFileUrl(coverRepresentation.resourceId) : project?.mediaType === "image" && remoteResourceId ? resourceFileUrl(remoteResourceId) : undefined,
-                    imageStorageKey: coverRepresentation ? `resource:${coverRepresentation.resourceId}` : undefined,
+                    imageStorageKey: coverRepresentation ? `resource:${coverRepresentation.resourceId}` : project?.mediaType === "image" && remoteResourceId ? `resource:${remoteResourceId}` : undefined,
                     imageFit: character ? "contain" : "cover",
                     description: character ? `${character.character?.visualStatus === "ready" ? "形象就绪" : "形象待完善"} · ${character.character?.voiceStatus === "ready" ? "声音已绑定" : "声音未绑定"}` : project?.previewText,
                     searchText: [media?.tags?.join(" ") || "", project?.previewText || ""].join(" "),

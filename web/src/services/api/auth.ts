@@ -270,6 +270,7 @@ export type UserPromptPreference = {
 
 export type AdminOSSSetting = {
     enabled: boolean;
+    storageMode: "local" | "oss";
     provider: OSSProvider;
     s3Preset: S3Preset;
     region: string;

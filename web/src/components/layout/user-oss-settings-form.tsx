@@ -86,7 +86,7 @@ export function UserOSSSettingsForm() {
             form.setFieldsValue(toFormValues(data.setting));
             setTestResult(data.setting.testedAt ? { ok: true, testedAt: data.setting.testedAt, testedDigest: data.setting.testedDigest } : null);
             setTestStale(false);
-            message.success(data.setting.enabled ? "个人对象存储已启用，后续上传将优先使用该存储" : "个人对象存储已停用，后续上传将使用平台存储");
+            message.success(data.setting.enabled ? "个人对象存储已启用，后续上传将写入该存储；失败时不会降级到浏览器本地" : "个人对象存储已停用，后续上传将使用平台存储");
         } catch (error) {
             message.error(error instanceof Error ? error.message : "保存个人对象存储配置失败");
         } finally {
@@ -118,7 +118,7 @@ export function UserOSSSettingsForm() {
                         <Cloud className="size-4" />
                         我的对象存储
                     </div>
-                    <p className="mt-1 max-w-3xl text-xs leading-5 text-foreground/55">启用后，新上传和新生成的媒体优先写入你的存储桶；停用时回退到平台存储。</p>
+                    <p className="mt-1 max-w-3xl text-xs leading-5 text-foreground/55">启用后，新上传和新生成的媒体写入你的存储桶；上传失败会提示重试，不会降级到浏览器本地。</p>
                 </div>
                 <div className="flex shrink-0 gap-2">
                     <Tag color={setting?.enabled ? "success" : "default"}>{setting?.enabled ? "已启用" : "未启用"}</Tag>

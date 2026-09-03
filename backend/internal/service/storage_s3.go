@@ -102,6 +102,7 @@ func putS3Object(setting ossSettingValue, objectKey string, mimeType string, siz
 	if size >= 0 {
 		input.ContentLength = aws.Int64(size)
 	}
+	input.CacheControl = aws.String(immutableResourceCacheControl)
 	output, err := client.PutObjectWithContext(context.Background(), input)
 	if err != nil {
 		return "", fmt.Errorf("S3 上传失败：%w", err)

@@ -6,6 +6,7 @@ import { Link, useNavigate, useSearchParams } from "react-router";
 
 import { CollectionGrid, ListToolbar, PageHeader, WorkspacePage } from "@/components/layout/workspace-page";
 import { WorkspaceErrorState, WorkspaceLoadingState, WorkspaceState } from "@/components/layout/workspace-state";
+import { CachedResourceImage } from "@/components/cached-resource-image";
 import { CanvasStylePickerModal, resolveCanvasStylePreset, resolveProjectCanvasStyle, type CanvasStylePreset } from "@/components/canvas/canvas-style-picker-modal";
 import { resourceFileUrl } from "@/services/api/resources";
 import { ModelPicker } from "@/components/model-picker";
@@ -378,7 +379,7 @@ function ProjectRow({ row, onDelete }: { row: ProjectSummary; onDelete: () => vo
     return (
         <Link to={`/projects/${row.project.id}/overview`} className="library-card project-library-card group">
             <span className="project-library-cover">
-                {coverUrl ? <img className="project-library-cover-art" src={coverUrl} alt="" /> : <span className="project-library-cover-icon"><FolderKanban className="size-7" /></span>}
+                {row.project.coverResourceId ? <CachedResourceImage storageKey={`resource:${row.project.coverResourceId}`} src={coverUrl} eager className="project-library-cover-art" alt="" /> : coverUrl ? <img className="project-library-cover-art" src={coverUrl} alt="" /> : <span className="project-library-cover-icon"><FolderKanban className="size-7" /></span>}
                 <span className="project-library-cover-scrim" />
                 <span className="project-library-cover-ratio">{row.project.aspectRatio}</span>
                 <span className="project-library-cover-stage">{stage.label}</span>

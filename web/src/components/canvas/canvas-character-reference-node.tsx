@@ -2,13 +2,15 @@ import { Image as ImageIcon, UserRound, Volume2 } from "lucide-react";
 import type { ReactNode } from "react";
 
 import type { CanvasNodeData } from "@/types/canvas";
+import { CachedResourceImage } from "@/components/cached-resource-image";
+import { resourceIdFromFileUrl, resourceStorageKey } from "@/services/api/resources";
 
 export function CanvasCharacterReferenceNodeContent({ node }: { node: CanvasNodeData }) {
     const visualReady = node.metadata?.characterVisualStatus === "ready";
     const voiceReady = node.metadata?.characterVoiceStatus === "ready";
     return <div className="flex h-full w-full flex-col overflow-hidden bg-background">
         <div className="relative min-h-0 flex-1 overflow-hidden bg-foreground/[.045]">
-            {node.metadata?.characterCoverUrl ? <img src={node.metadata.characterCoverUrl} alt={node.metadata?.characterName || node.title} className="h-full w-full object-contain p-2" draggable={false} /> : <div className="grid h-full place-items-center text-foreground/22"><UserRound className="size-12" /></div>}
+            {node.metadata?.characterCoverUrl ? (() => { const resourceId = resourceIdFromFileUrl(node.metadata.characterCoverUrl); return resourceId ? <CachedResourceImage storageKey={resourceStorageKey(resourceId)} src={node.metadata.characterCoverUrl} alt={node.metadata?.characterName || node.title} className="h-full w-full object-contain p-2" eager draggable={false} /> : <img src={node.metadata.characterCoverUrl} alt={node.metadata?.characterName || node.title} className="h-full w-full object-contain p-2" draggable={false} />; })() : <div className="grid h-full place-items-center text-foreground/22"><UserRound className="size-12" /></div>}
             <span className="absolute left-3 top-3 rounded bg-black/60 px-2 py-1 text-[var(--fs-tiny)] font-medium text-white">角色引用</span>
         </div>
         <div className="shrink-0 border-t border-border/70 px-3 py-2.5">

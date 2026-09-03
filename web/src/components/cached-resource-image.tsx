@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type ImgHTMLAttributes, type ReactNode } from "react";
 
-import { resourceIdFromStorageKey } from "@/services/api/resources";
-import { cacheResourceObjectUrl } from "@/services/resource-blob-cache";
+import { getResourceDirectUrl, resourceFallbackUrl, resourceIdFromFileUrl, resourceIdFromStorageKey, resourceStorageKey } from "@/services/api/resources";
 import { resolveImageUrl } from "@/services/image-storage";
 
 type CachedResourceImageProps = Omit<ImgHTMLAttributes<HTMLImageElement>, "src"> & {
@@ -16,12 +15,15 @@ type CachedResourceImageProps = Omit<ImgHTMLAttributes<HTMLImageElement>, "src">
  * 本地 image: 类型的 storageKey 也会自动从 LocalForage 恢复有效的 Object URL。
  */
 export function CachedResourceImage({ storageKey, src = "", fallback = null, eager = false, onError, ...props }: CachedResourceImageProps) {
-    const remoteResource = Boolean(resourceIdFromStorageKey(storageKey));
-    const localImageResource = Boolean(storageKey && storageKey.startsWith("image:"));
+    const resourceId = resourceIdFromStorageKey(storageKey) || resourceIdFromFileUrl(src);
+    const effectiveStorageKey = resourceId ? resourceStorageKey(resourceId) : storageKey;
+    const remoteResource = Boolean(resourceId);
+    const localImageResource = Boolean(effectiveStorageKey && effectiveStorageKey.startsWith("image:"));
     const targetRef = useRef<HTMLSpanElement>(null);
     const [nearViewport, setNearViewport] = useState(eager || !remoteResource);
     const [cachedSrc, setCachedSrc] = useState(remoteResource ? "" : src);
     const [cacheFailed, setCacheFailed] = useState(false);
+    const directRetryRef = useRef(false);
 
     useEffect(() => {
         if (!remoteResource || eager) {
@@ -49,8 +51,9 @@ export function CachedResourceImage({ storageKey, src = "", fallback = null, eag
     useEffect(() => {
         let cancelled = false;
         setCacheFailed(false);
+        directRetryRef.current = false;
 
-        if (remoteResource && storageKey) {
+        if (remoteResource && effectiveStorageKey) {
             if (!nearViewport) {
                 setCachedSrc("");
                 return () => {
@@ -58,24 +61,24 @@ export function CachedResourceImage({ storageKey, src = "", fallback = null, eag
                 };
             }
             setCachedSrc("");
-            const resolve = cacheResourceObjectUrl(storageKey);
+            // Try one direct CORS read so the Blob can be reused on later
+            // renders. If the bucket has no CORS, resolveImageUrl falls back
+            // to the signed URL for <img> without proxying through /file.
+            const resolve = resolveImageUrl(effectiveStorageKey, src, { cacheMiss: true, proxyFallback: false });
             void resolve
                 .then((url) => {
-                    if (!cancelled) setCachedSrc(url || src);
+                    if (!cancelled) setCachedSrc(url || resourceFallbackUrl(resourceId, src));
                 })
                 .catch(() => {
-                    if (!cancelled) {
-                        setCacheFailed(true);
-                        setCachedSrc(src);
-                    }
+                    if (!cancelled) setCacheFailed(true);
                 });
             return () => {
                 cancelled = true;
             };
         }
 
-        if (localImageResource && storageKey) {
-            void resolveImageUrl(storageKey, src)
+        if (localImageResource && effectiveStorageKey) {
+            void resolveImageUrl(effectiveStorageKey, src)
                 .then((url) => {
                     if (!cancelled) setCachedSrc(url || src);
                 })
@@ -91,11 +94,28 @@ export function CachedResourceImage({ storageKey, src = "", fallback = null, eag
         return () => {
             cancelled = true;
         };
-    }, [localImageResource, nearViewport, remoteResource, src, storageKey]);
+    }, [effectiveStorageKey, localImageResource, nearViewport, remoteResource, src]);
 
     const handleImgError = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
-        if (localImageResource && storageKey && cachedSrc.startsWith("blob:")) {
-            void resolveImageUrl(storageKey)
+        if (remoteResource && effectiveStorageKey && !directRetryRef.current) {
+            directRetryRef.current = true;
+            void getResourceDirectUrl(effectiveStorageKey, { forceRefresh: true })
+                .then((url) => {
+                    if (url && url !== cachedSrc) {
+                        setCachedSrc(url);
+                        return;
+                    }
+                    setCacheFailed(true);
+                    onError?.(e);
+                })
+                .catch(() => {
+                    setCacheFailed(true);
+                    onError?.(e);
+                });
+            return;
+        }
+        if (localImageResource && effectiveStorageKey && cachedSrc.startsWith("blob:")) {
+            void resolveImageUrl(effectiveStorageKey)
                 .then((url) => {
                     if (url && url !== cachedSrc) {
                         setCachedSrc(url);

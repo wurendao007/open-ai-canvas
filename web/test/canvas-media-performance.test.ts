@@ -12,6 +12,10 @@ import { detectVideoAudioTrack, detectVideoAudioTrackFromBlob, detectVideoAudioT
 
 const canvasNodeContentSource = readFileSync(resolve(import.meta.dir, "../src/components/canvas/canvas-node-content.tsx"), "utf8");
 const canvasAudioPlayerSource = readFileSync(resolve(import.meta.dir, "../src/components/canvas/canvas-audio-player.tsx"), "utf8");
+const canvasAudioPlaybackSource = readFileSync(resolve(import.meta.dir, "../src/services/canvas-audio-playback.ts"), "utf8");
+const fileStorageSource = readFileSync(resolve(import.meta.dir, "../src/services/file-storage.ts"), "utf8");
+const resourcesApiSource = readFileSync(resolve(import.meta.dir, "../src/services/api/resources.ts"), "utf8");
+const resourceBlobCacheSource = readFileSync(resolve(import.meta.dir, "../src/services/resource-blob-cache.ts"), "utf8");
 const canvasMentionSource = readFileSync(resolve(import.meta.dir, "../src/components/canvas/canvas-resource-mention-textarea.tsx"), "utf8");
 const canvasNodeSource = readFileSync(resolve(import.meta.dir, "../src/components/canvas/canvas-node.tsx"), "utf8");
 const canvasVideoPreviewSource = readFileSync(resolve(import.meta.dir, "../src/services/canvas-video-preview.ts"), "utf8");
@@ -70,12 +74,43 @@ describe("large canvas media rendering", () => {
     });
 
     test("lets inactive video nodes hydrate their own first-frame preview", () => {
-        expect(canvasNodeContentSource).toContain("if (previewUrl || !node.metadata?.content || !updateMetadataRef.current)");
+        expect(canvasNodeContentSource).toContain("if (previewUrl || !hasSource || !updateMetadataRef.current || previewLoading || active)");
         expect(canvasNodeContentSource).not.toContain("hydrateMediaPreview");
         expect(canvasNodeContentSource).toContain("mediaActive || !hasPassivePreview");
-        expect(canvasNodeContentSource).toContain('muted\n                playsInline\n                preload="auto"');
+        expect(canvasNodeContentSource).toMatch(/muted\s+playsInline\s+preload="auto"/);
         expect(canvasNodeContentSource).toContain("onLoadedMetadata={(event) => primePassiveVideoFrame(event.currentTarget)}");
         expect(canvasNodeContentSource).toContain("video.currentTime = Math.min(0.001, video.duration)");
+        expect(canvasNodeContentSource).toContain('active ? "pointer-events-none opacity-0" : ""');
+        expect(canvasNodeContentSource).toContain("if (hydrating) return <InactiveMediaCard");
+    });
+
+    test("keeps the poster mounted across playback and does not cache video bodies", () => {
+        expect(canvasNodeContentSource).toContain("transition-opacity");
+        expect(canvasNodeContentSource).toContain('active ? "pointer-events-none opacity-0" : ""');
+        expect(canvasNodeContentSource).toContain("const storageChanged = previousStorageKey.current !== storageKey;");
+        expect(canvasNodeContentSource).toContain("resolveImageUrl(storageKey, fallback, { cacheMiss: true, proxyFallback: false })");
+        expect(canvasNodeContentSource).toContain("只有图片进入 Blob 缓存");
+        expect(canvasNodeContentSource).toContain("node.type === CanvasNodeType.Image");
+        expect(fileStorageSource).not.toContain("primeResourceBlobCache(resourceStorageKey(resource.id), blob)");
+        expect(fileStorageSource).toContain("getResourceDirectUrl(remoteStorageKey, options)");
+        expect(canvasAudioPlaybackSource).toContain("getCachedResourceObjectUrl(source.storageKey)");
+        expect(canvasAudioPlaybackSource).toContain("getResourceDirectUrl(source.storageKey)");
+        expect(canvasAudioPlaybackSource).not.toContain("cacheResourceObjectUrl(source.storageKey)");
+    });
+
+    test("resolves signed provider URLs before Blob caching and only proxies as an explicit fallback", () => {
+        expect(resourcesApiSource).toContain("/resources/${encodeURIComponent(id)}/direct-url");
+        expect(resourcesApiSource).toContain('fetch(directURL, { credentials: isResourceUrl(directURL) ? "include" : "omit", cache: "force-cache", signal: options.signal })');
+        expect(resourcesApiSource).toContain('fetch(proxyURL, { credentials: "include", signal: options.signal })');
+        expect(resourcesApiSource).toContain("if (options.proxyFallback === false) return null;");
+        expect(resourceBlobCacheSource).toContain("const blob = await getResourceBlob(storageKey, options);");
+        expect(resourceBlobCacheSource).not.toContain("getResourceBlob(storageKey, { proxyFallback: false })");
+    });
+
+    test("migrates legacy file-only node media references before mounting", () => {
+        expect(canvasNodeContentSource).toContain("const resourceId = resourceIdFromStorageKey(rawStorageKey) || resourceIdFromFileUrl(fallback);");
+        expect(canvasNodeContentSource).toContain("const storageKey = resourceId ? resourceStorageKey(resourceId) : rawStorageKey;");
+        expect(canvasNodeContentSource).toContain("resourceIdFromFileUrl");
     });
 
     test("allows failed or empty first-frame requests to retry", () => {
@@ -92,7 +127,7 @@ describe("audio canvas interaction", () => {
         expect(canvasNodeContentSource.match(/function AudioNodeContent[\s\S]*?\n}\n/)?.[0] || "").not.toContain("useNodeResourceUrl");
         expect(canvasAudioPlayerSource).not.toContain("播放结束，点击重新播放");
         expect(canvasAudioPlayerSource).not.toContain("pr-24");
-        expect(canvasAudioPlayerSource).toContain("formatAudioTime(snapshot.currentTimeMs)}/{durationMs ? formatAudioTime(durationMs) : \"--:--\"");
+        expect(canvasAudioPlayerSource).toContain('formatAudioTime(snapshot.currentTimeMs)}/{durationMs ? formatAudioTime(durationMs) : "--:--"');
     });
 
     test("isolates player controls from canvas gestures", () => {
@@ -102,7 +137,6 @@ describe("audio canvas interaction", () => {
         expect(canvasAudioPlayerSource).toContain("onClick={(event) => {");
         expect(canvasAudioPlayerSource).toContain("togglePlayback();");
     });
-
 });
 
 describe("video canvas controls", () => {
@@ -147,7 +181,7 @@ describe("video canvas controls", () => {
         expect(playerCSS).toContain("--media-slider-width: var(--video-volume-slider-width)");
         expect(playerCSS).toContain('.canvas-video-player[data-no-audio="true"] .vds-volume .vds-mute-button');
         expect(playerCSS).toContain("cursor: not-allowed;");
-        expect(playerCSS).toContain("data-player-variant=\"compact\"]:is([data-fullscreen], :fullscreen, :-webkit-full-screen)");
+        expect(playerCSS).toContain('data-player-variant="compact"]:is([data-fullscreen], :fullscreen, :-webkit-full-screen)');
         expect(playerCSS).toContain("height: var(--canvas-video-control-size);");
         expect(playerCSS).toContain("min-height: var(--canvas-video-control-size);");
         expect(playerCSS).toContain("padding: 0 0 0 calc(var(--canvas-video-control-size)");
@@ -180,7 +214,7 @@ describe("video canvas controls", () => {
         expect(videoPlayerSource).not.toContain("onPointerDownCapture={stopCanvasControlInteraction}");
         expect(videoPlayerSource).not.toContain("onMouseDownCapture={stopCanvasControlInteraction}");
         expect(videoPlayerSource).not.toContain("onClickCapture={stopCanvasControlClick}");
-        expect(canvasNodeContentSource).toContain("hasAudio={inferVideoHasAudio(node.metadata)} autoPlay={mediaActive}");
+        expect(canvasNodeContentSource).toMatch(/hasAudio=\{inferVideoHasAudio\(node\.metadata\)\}[\s\S]*?autoPlay=\{mediaActive\}/);
         expect(canvasNodeContentSource).toContain('if (["false", "0", "off", "no", "disabled"].includes(value || "")) return false;');
     });
 
@@ -210,13 +244,14 @@ describe("video canvas controls", () => {
     test("probes remote MP4 ranges when browser audio APIs are unavailable", async () => {
         const originalFetch = globalThis.fetch;
         const movie = isoBmffMovie(["vide"]);
-        globalThis.fetch = (async () => new Response(movie, {
-            status: 206,
-            headers: {
-                "content-range": `bytes 0-${movie.byteLength - 1}/${movie.byteLength}`,
-                "content-length": String(movie.byteLength),
-            },
-        })) as typeof fetch;
+        globalThis.fetch = (async () =>
+            new Response(movie, {
+                status: 206,
+                headers: {
+                    "content-range": `bytes 0-${movie.byteLength - 1}/${movie.byteLength}`,
+                    "content-length": String(movie.byteLength),
+                },
+            })) as typeof fetch;
         try {
             expect(await detectVideoAudioTrackFromUrl(`https://media.example/silent-${movie.byteLength}.mp4`)).toBe(false);
         } finally {
@@ -284,7 +319,7 @@ describe("passive video previews", () => {
         expect(canvasMentionSource).toContain("onloadedmetadata = () => primeVideoPreviewFrame(media)");
         expect(canvasMentionSource).toContain("onLoadedMetadata={(event) => primeVideoPreviewFrame(event.currentTarget)}");
         expect(canvasMentionSource).toContain("video.currentTime = Math.min(0.001, video.duration)");
-        expect(canvasMentionSource).toContain("reference.kind === \"video\" && reference.previewUrl");
+        expect(canvasMentionSource).toContain('reference.kind === "video" && reference.previewUrl');
     });
 
     test("persists uploaded posters in video node metadata and prefers them over legacy previews", () => {

@@ -122,6 +122,9 @@ func TestPutOSSObjectSupportsTencentCOS(t *testing.T) {
 		if r.Header.Get("Content-Type") != "image/png" {
 			t.Errorf("Content-Type = %q", r.Header.Get("Content-Type"))
 		}
+		if r.Header.Get("Cache-Control") != immutableResourceCacheControl {
+			t.Errorf("Cache-Control = %q", r.Header.Get("Cache-Control"))
+		}
 		authorization := r.Header.Get("Authorization")
 		if !strings.Contains(authorization, "q-sign-algorithm=sha1") || !strings.Contains(authorization, "q-ak=secret-id") {
 			t.Errorf("Authorization = %q", authorization)
@@ -391,6 +394,47 @@ func TestDirectResourceURLChecksOwnershipAndSignsOSSResource(t *testing.T) {
 	}
 	if _, err := svc.DirectResourceURL("other-user", resource.ID); err == nil {
 		t.Fatal("DirectResourceURL() allowed another user's resource")
+	}
+}
+
+func TestBrowserResourceURLKeepsLocalResourcesOnAuthenticatedRoute(t *testing.T) {
+	svc := newResourceTestService(t)
+	resource := model.Resource{
+		ID: "resource-local-browser", UserID: "user-1", Kind: "image", Status: model.ResourceStatusReady,
+		Provider: "local", ObjectKey: "users/user-1/image/local.png", MimeType: "image/png",
+	}
+	if err := svc.repo.CreateResource(&resource); err != nil {
+		t.Fatal(err)
+	}
+	value, proxy, err := svc.BrowserResourceURL("user-1", resource.ID)
+	if err != nil || !proxy || value != "" {
+		t.Fatalf("BrowserResourceURL() = %q, %v, %v", value, proxy, err)
+	}
+	if _, _, err := svc.BrowserResourceURL("other-user", resource.ID); err == nil {
+		t.Fatal("BrowserResourceURL() allowed another user's resource")
+	}
+}
+
+func TestBrowserResourceURLKeepsPrivateS3OnAuthenticatedRoute(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	svc := newResourceTestService(t)
+	settingJSON, _ := json.Marshal(ossSettingValue{
+		Enabled: true, Provider: s3Provider, Endpoint: "http://127.0.0.1:9000", Bucket: "private-bucket",
+		AccessKeyID: "access-id", AccessKeySecret: "secret-value", PathStyle: true,
+	})
+	if err := svc.repo.SaveSystemSetting(&model.SystemSetting{Key: ossSettingKey, ValueJSON: string(settingJSON)}); err != nil {
+		t.Fatal(err)
+	}
+	resource := model.Resource{
+		ID: "resource-private-s3-browser", UserID: "user-1", Kind: "video", Status: model.ResourceStatusReady,
+		Provider: s3Provider, Endpoint: "http://127.0.0.1:9000", Bucket: "private-bucket", ObjectKey: "users/user-1/video/private.mp4", MimeType: "video/mp4",
+	}
+	if err := svc.repo.CreateResource(&resource); err != nil {
+		t.Fatal(err)
+	}
+	value, proxy, err := svc.BrowserResourceURL("user-1", resource.ID)
+	if err != nil || !proxy || value != "" {
+		t.Fatalf("BrowserResourceURL() = %q, %v, %v", value, proxy, err)
 	}
 }
 
@@ -835,6 +879,40 @@ func TestActiveResourceOSSSettingPrefersUserVersion(t *testing.T) {
 	}
 	if !useOSS || settingID == "" || setting.Bucket != "user" || !created.Enabled {
 		t.Fatalf("activeResourceOSSSetting() = %#v, %q, %v", setting, settingID, useOSS)
+	}
+	mode, err := svc.effectiveResourceStorageMode(actor.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != "oss" {
+		t.Fatalf("effectiveResourceStorageMode() = %q, want oss", mode)
+	}
+}
+
+func TestEffectiveResourceStorageModeUsesPlatformWhenUserStorageIsDisabled(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer server.Close()
+	svc := newResourceTestService(t)
+	actor := &model.User{ID: "user-1"}
+
+	mode, err := svc.effectiveResourceStorageMode(actor.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != "local" {
+		t.Fatalf("effectiveResourceStorageMode() without settings = %q, want local", mode)
+	}
+	systemJSON, _ := json.Marshal(ossSettingValue{Enabled: true, Provider: "aliyun", Endpoint: server.URL, Bucket: "system", AccessKeyID: "system-id", AccessKeySecret: "system-secret"})
+	if err := svc.repo.SaveSystemSetting(&model.SystemSetting{Key: ossSettingKey, ValueJSON: string(systemJSON)}); err != nil {
+		t.Fatal(err)
+	}
+	mode, err = svc.effectiveResourceStorageMode(actor.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != "oss" {
+		t.Fatalf("effectiveResourceStorageMode() with platform storage = %q, want oss", mode)
 	}
 }
 

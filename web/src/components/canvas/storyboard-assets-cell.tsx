@@ -4,6 +4,7 @@ import { Image as ImageIcon, Music2, Play, UserRound } from "lucide-react";
 
 import { canvasNodeVideoPreviewUrl } from "@/lib/canvas/canvas-media-preview";
 import { isStoryboardPreviewAsset } from "@/lib/canvas/canvas-storyboard-materializer";
+import { resourceFallbackUrl, resourceIdFromFileUrl, resourceIdFromStorageKey, resourceStorageKey } from "@/services/api/resources";
 import { resolveMediaUrl } from "@/services/file-storage";
 import { CanvasNodeType, type CanvasNodeData, type StoryboardAssetBinding } from "@/types/canvas";
 
@@ -93,17 +94,20 @@ function useNodeMediaSource(node: CanvasNodeData | null) {
         : node.type === CanvasNodeType.Drawing
             ? node.metadata?.drawingPreviewUrl || node.metadata?.content || ""
             : node.metadata?.content || "" : "";
-    const storageKey = node?.metadata?.storageKey;
+    const rawStorageKey = node?.metadata?.storageKey || "";
+    const resourceId = resourceIdFromStorageKey(rawStorageKey) || resourceIdFromFileUrl(fallback);
+    const storageKey = rawStorageKey || (resourceId ? resourceStorageKey(resourceId) : "");
+    const safeFallback = resourceId ? resourceFallbackUrl(resourceId, fallback) : fallback;
     const [source, setSource] = useState(fallback);
     useEffect(() => {
         let cancelled = false;
-        setSource(fallback);
-        if (storageKey) void resolveMediaUrl(storageKey, fallback).then((url) => {
-            if (!cancelled) setSource(url || fallback);
+        setSource(safeFallback);
+        if (storageKey) void resolveMediaUrl(storageKey, safeFallback).then((url) => {
+            if (!cancelled) setSource(url || safeFallback);
         }).catch(() => {
-            if (!cancelled) setSource(fallback);
+            if (!cancelled) setSource(safeFallback);
         });
         return () => { cancelled = true; };
-    }, [fallback, storageKey]);
+    }, [fallback, safeFallback, storageKey]);
     return source;
 }

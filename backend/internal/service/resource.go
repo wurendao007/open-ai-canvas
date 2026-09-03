@@ -39,6 +39,7 @@ import (
 
 const providerResourceURLTTL = 4 * time.Hour
 const directResourceURLTTL = 5 * time.Minute
+const immutableResourceCacheControl = "private, max-age=31536000, immutable"
 
 var errInvalidGeneratedDataURL = errors.New("生成内容 data URL 无效")
 
@@ -88,6 +89,42 @@ func (s *Service) DirectResourceURL(userID string, id string) (string, error) {
 	return s.directResourceURL(resource, time.Now().Add(directResourceURLTTL))
 }
 
+// BrowserResourceURL distinguishes local resources from objects that can be
+// mounted through a provider URL. Local resources stay on the authenticated
+// file route and do not require CANVAS_PUBLIC_BASE_URL.
+func (s *Service) BrowserResourceURL(userID string, id string) (string, bool, error) {
+	resource, err := s.repo.ResourceForUser(userID, id)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", false, NotFound("资源不存在")
+		}
+		return "", false, err
+	}
+	return s.browserResourceURL(resource)
+}
+
+func (s *Service) browserResourceURL(resource *model.Resource) (string, bool, error) {
+	if resource == nil {
+		return "", false, errors.New("资源不存在")
+	}
+	if resource.Status != model.ResourceStatusReady {
+		return "", false, BadAuthRequest("资源尚未上传完成")
+	}
+	resource.Provider = normalizedResourceProvider(resource.Provider)
+	if resource.Provider == "local" {
+		return "", true, nil
+	}
+	setting, err := s.directResourceOSSSetting(resource)
+	if err != nil {
+		return "", false, err
+	}
+	if setting.Provider == s3Provider && !publicHTTPSStorageEndpoint(setting.Endpoint) {
+		return "", true, nil
+	}
+	value, err := signedOSSObjectURL(setting, resource.ObjectKey, time.Now().Add(directResourceURLTTL))
+	return value, false, err
+}
+
 func (s *Service) directResourceURL(resource *model.Resource, expiresAt time.Time) (string, error) {
 	if resource == nil {
 		return "", errors.New("资源不存在")
@@ -98,17 +135,25 @@ func (s *Service) directResourceURL(resource *model.Resource, expiresAt time.Tim
 	if resource.Provider == "local" {
 		return s.signedPublicResourceURL(resource, expiresAt)
 	}
-	setting, err := s.ossSettingForResource(resource.UserID, resource)
+	setting, err := s.directResourceOSSSetting(resource)
 	if err != nil {
 		return "", err
 	}
-	setting.Provider = firstNonEmpty(resource.Provider, setting.Provider)
-	setting.Endpoint = firstNonEmpty(resource.Endpoint, setting.Endpoint)
-	setting.Bucket = firstNonEmpty(resource.Bucket, setting.Bucket)
 	if setting.Provider == s3Provider && !publicHTTPSStorageEndpoint(setting.Endpoint) {
 		return s.signedHTTPSPublicResourceURL(resource, expiresAt)
 	}
 	return signedOSSObjectURL(setting, resource.ObjectKey, expiresAt)
+}
+
+func (s *Service) directResourceOSSSetting(resource *model.Resource) (ossSettingValue, error) {
+	setting, err := s.ossSettingForResource(resource.UserID, resource)
+	if err != nil {
+		return ossSettingValue{}, err
+	}
+	setting.Provider = firstNonEmpty(resource.Provider, setting.Provider)
+	setting.Endpoint = firstNonEmpty(resource.Endpoint, setting.Endpoint)
+	setting.Bucket = firstNonEmpty(resource.Bucket, setting.Bucket)
+	return setting, nil
 }
 
 // PrepareResourceDelivery 统一决定浏览器资源出口：配置 CDN 时默认直连 CDN，显式代理仅用于需要同源 Blob 的内部读取。
@@ -929,6 +974,28 @@ func (s *Service) activeResourceOSSSetting(userID string) (ossSettingValue, stri
 	return systemValue, systemValue.StorageLocationID, true, err
 }
 
+// effectiveResourceStorageMode mirrors activeResourceOSSSetting without validating
+// credentials, so clients can fail closed even while an enabled configuration
+// needs repair.
+func (s *Service) effectiveResourceStorageMode(userID string) (string, error) {
+	userSetting, userValue, err := s.readUserOSSSetting(userID)
+	if err != nil {
+		return "", err
+	}
+	_, systemValue, err := s.readOSSSetting()
+	if err != nil {
+		return "", err
+	}
+	userAllowed := userValue.Provider != s3Provider || systemValue.AllowUserS3
+	if userSetting != nil && userValue.Enabled && userAllowed {
+		return "oss", nil
+	}
+	if systemValue.Enabled {
+		return "oss", nil
+	}
+	return "local", nil
+}
+
 func (s *Service) ossSettingForResource(userID string, resource *model.Resource) (ossSettingValue, error) {
 	var setting ossSettingValue
 	var err error
@@ -1085,6 +1152,7 @@ func putAliyunOSSObject(setting ossSettingValue, objectKey string, mimeType stri
 	if size > 0 {
 		req.ContentLength = size
 	}
+	req.Header.Set("Cache-Control", immutableResourceCacheControl)
 	resp, err := OutboundHTTPClient(2 * time.Minute).Do(req)
 	if err != nil {
 		return "", err
@@ -1220,7 +1288,7 @@ func putCOSObject(setting ossSettingValue, objectKey string, mimeType string, si
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
 	}
-	options := &cos.ObjectPutOptions{ObjectPutHeaderOptions: &cos.ObjectPutHeaderOptions{ContentType: mimeType, ContentLength: size}}
+	options := &cos.ObjectPutOptions{ObjectPutHeaderOptions: &cos.ObjectPutHeaderOptions{ContentType: mimeType, ContentLength: size, CacheControl: immutableResourceCacheControl}}
 	resp, err := client.Object.Put(context.Background(), objectKey, body, options)
 	if err != nil {
 		return "", fmt.Errorf("COS 上传失败：%w", err)

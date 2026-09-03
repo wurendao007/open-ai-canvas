@@ -1,5 +1,5 @@
-import { cacheResourceObjectUrl } from "@/services/resource-blob-cache";
-import { resourceIdFromStorageKey } from "@/services/api/resources";
+import { getCachedResourceObjectUrl } from "@/services/resource-blob-cache";
+import { getResourceDirectUrl, resourceFallbackUrl, resourceIdFromFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
 
 export type CanvasAudioSource = {
     nodeId: string;
@@ -256,8 +256,12 @@ function sameSource(left: CanvasAudioSource, right: CanvasAudioSource) {
 
 async function resolveAudioSource(source: CanvasAudioSource) {
     if (source.storageKey && resourceIdFromStorageKey(source.storageKey)) {
-        const cached = await cacheResourceObjectUrl(source.storageKey).catch(() => "");
-        return cached || source.content;
+        // 音频播放优先复用已有缓存，但缓存未命中时直接交给浏览器流式读取，
+        // 不在点击播放时把整段音频下载到 IndexedDB。
+        const cached = await getCachedResourceObjectUrl(source.storageKey).catch(() => "");
+        if (cached) return cached;
+        const resourceId = resourceIdFromStorageKey(source.storageKey) || resourceIdFromFileUrl(source.content);
+        return await getResourceDirectUrl(source.storageKey).catch(() => resourceFallbackUrl(resourceId, source.content));
     }
     return source.content;
 }

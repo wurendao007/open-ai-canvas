@@ -127,6 +127,23 @@ func (s *Service) OpenResourceRangeAsAdmin(actor *model.User, id string, rangeHe
 	return s.openResourceRange(resource.UserID, resource, rangeHeader)
 }
 
+// DirectResourceURLAsAdmin authorizes the administrator before signing a
+// short-lived URL for a resource owned by any user. It is used only for
+// previews; downloads continue through the authenticated attachment stream.
+func (s *Service) DirectResourceURLAsAdmin(actor *model.User, id string) (string, bool, error) {
+	if err := s.RequireAdmin(actor); err != nil {
+		return "", false, err
+	}
+	resource, err := s.repo.Resource(strings.TrimSpace(id))
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", false, NotFound("资源不存在")
+		}
+		return "", false, err
+	}
+	return s.browserResourceURL(resource)
+}
+
 func normalizeAdminResourceQuery(query AdminResourceQuery) (repository.AdminResourceFilter, int, int, error) {
 	page, limit := normalizeAdminPage(query.Page, query.Limit)
 	filter := repository.AdminResourceFilter{

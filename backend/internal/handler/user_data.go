@@ -247,6 +247,23 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		c.Header("Referrer-Policy", "no-referrer")
 		ok(c, gin.H{"url": ossURL})
 	})
+	r.GET("/resources/:id/direct-url", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		directURL, proxy, err := svc.BrowserResourceURL(user.ID, c.Param("id"))
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		// 直达地址只在短时有效；浏览器缓存的是随后返回的对象 Blob，
+		// 不缓存这个带签名的接口响应。
+		c.Header("Cache-Control", "private, no-store")
+		c.Header("Referrer-Policy", "no-referrer")
+		ok(c, gin.H{"url": directURL, "proxy": proxy})
+	})
 	r.GET("/resources/:id/file", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {

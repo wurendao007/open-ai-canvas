@@ -88,4 +88,20 @@ func RegisterAdminStorageRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		c.DataFromReader(stream.StatusCode, stream.ContentLength, mimeType, stream.Body, nil)
 	})
+
+	r.GET("/admin/resources/:id/direct-url", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		directURL, proxy, err := svc.DirectResourceURLAsAdmin(user, c.Param("id"))
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		c.Header("Cache-Control", "private, no-store")
+		c.Header("Referrer-Policy", "no-referrer")
+		ok(c, gin.H{"url": directURL, "proxy": proxy})
+	})
 }

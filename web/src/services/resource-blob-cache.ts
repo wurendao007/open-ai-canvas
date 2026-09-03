@@ -21,6 +21,7 @@ const inFlight = new Map<string, Promise<string>>();
 const downloadQueue: Array<() => void> = [];
 let activeDownloads = 0;
 let persistQueue: Promise<void> = Promise.resolve();
+let cacheGeneration = 0;
 const MAX_CACHE_BYTES = 2 * 1024 * 1024 * 1024;
 const FALLBACK_CACHE_BYTES = 512 * 1024 * 1024;
 const MIN_CACHE_BYTES = 64 * 1024 * 1024;
@@ -29,32 +30,48 @@ const TOUCH_INTERVAL_MS = 10 * 60 * 1000;
 const MAX_CONCURRENT_DOWNLOADS = 4;
 
 export async function getCachedResourceObjectUrl(storageKey: string) {
+    const generation = cacheGeneration;
+    const scope = getActiveUserScope();
     const target = await cacheTarget(storageKey);
     if (!target) return "";
-    return readCachedObjectUrl(target);
+    if (generation !== cacheGeneration || scope !== getActiveUserScope()) return "";
+    const value = await readCachedObjectUrl(target);
+    return generation === cacheGeneration && scope === getActiveUserScope() ? value : "";
 }
 
-export async function cacheResourceObjectUrl(storageKey: string) {
+export async function cacheResourceObjectUrl(storageKey: string, options?: { proxyFallback?: boolean }) {
+    const generation = cacheGeneration;
+    const scope = getActiveUserScope();
     const target = await cacheTarget(storageKey);
     if (!target) return "";
+    if (generation !== cacheGeneration || scope !== getActiveUserScope()) return "";
     const cached = await readCachedObjectUrl(target);
+    if (generation !== cacheGeneration || scope !== getActiveUserScope()) return "";
     if (cached) return cached;
     const pending = inFlight.get(target.key);
-    if (pending) return pending;
+    if (pending) {
+        const value = await pending;
+        return generation === cacheGeneration && scope === getActiveUserScope() ? value : "";
+    }
 
-    const task = withDownloadSlot(() => downloadAndCacheResource(storageKey, target)).finally(() => inFlight.delete(target.key));
+    const task = withDownloadSlot(() => downloadAndCacheResource(storageKey, target, options)).finally(() => {
+        if (inFlight.get(target.key) === task) inFlight.delete(target.key);
+    });
     inFlight.set(target.key, task);
-    return task;
+    const value = await task;
+    return generation === cacheGeneration && scope === getActiveUserScope() ? value : "";
 }
 
 function withDownloadSlot<T>(task: () => Promise<T>) {
     return new Promise<T>((resolve, reject) => {
         downloadQueue.push(() => {
             activeDownloads += 1;
-            task().then(resolve, reject).finally(() => {
-                activeDownloads -= 1;
-                runDownloadQueue();
-            });
+            task()
+                .then(resolve, reject)
+                .finally(() => {
+                    activeDownloads -= 1;
+                    runDownloadQueue();
+                });
         });
         runDownloadQueue();
     });
@@ -67,6 +84,7 @@ function runDownloadQueue() {
 export async function primeResourceBlobCache(storageKey: string, blob: Blob) {
     const target = await cacheTarget(storageKey);
     if (!target) return "";
+    if (target.userScope !== getActiveUserScope()) return "";
     sessionBlobs.set(target.key, blob);
     const url = objectUrl(target.key, blob);
     if (blob.size <= MAX_CACHE_BYTES) void enqueuePersist(target, blob);
@@ -74,9 +92,13 @@ export async function primeResourceBlobCache(storageKey: string, blob: Blob) {
 }
 
 export async function getCachedResourceBlob(storageKey: string) {
+    const generation = cacheGeneration;
+    const scope = getActiveUserScope();
     const target = await cacheTarget(storageKey);
     if (!target) return null;
+    if (generation !== cacheGeneration || scope !== getActiveUserScope()) return null;
     const cached = await blobStore.getItem<Blob>(target.key);
+    if (generation !== cacheGeneration || scope !== getActiveUserScope()) return null;
     if (cached) {
         void touchCacheMeta(target).catch(() => undefined);
         return cached;
@@ -86,23 +108,34 @@ export async function getCachedResourceBlob(storageKey: string) {
     const pending = inFlight.get(target.key);
     if (pending) {
         await pending;
-        return sessionBlobs.get(target.key) || blobStore.getItem<Blob>(target.key);
+        if (generation !== cacheGeneration || scope !== getActiveUserScope()) return null;
+        const value = sessionBlobs.get(target.key) || (await blobStore.getItem<Blob>(target.key));
+        return generation === cacheGeneration && scope === getActiveUserScope() ? value : null;
     }
     await cacheResourceObjectUrl(storageKey);
-    return sessionBlobs.get(target.key) || blobStore.getItem<Blob>(target.key);
+    if (generation !== cacheGeneration || scope !== getActiveUserScope()) return null;
+    const value = sessionBlobs.get(target.key) || (await blobStore.getItem<Blob>(target.key));
+    return generation === cacheGeneration && scope === getActiveUserScope() ? value : null;
 }
 
-async function downloadAndCacheResource(storageKey: string, target: ResourceCacheMeta) {
-    const blob = await downloadResourceBlob(storageKey, target);
+async function downloadAndCacheResource(storageKey: string, target: ResourceCacheMeta, options?: { proxyFallback?: boolean }) {
+    // A queued request may only start after the user has switched accounts.
+    // Resolve it as a cache miss instead of issuing the old resource ID under
+    // the new session.
+    if (target.userScope !== getActiveUserScope()) return "";
+    const blob = await downloadResourceBlob(storageKey, target, options);
     if (!blob) return "";
     return objectUrl(target.key, blob);
 }
 
-async function downloadResourceBlob(storageKey: string, target: ResourceCacheMeta) {
-    // Cache misses must not force public object-storage media through the app server
-    // when the bucket does not expose browser CORS for Blob reads.
-    const blob = await getResourceBlob(storageKey, { proxyFallback: false });
+async function downloadResourceBlob(storageKey: string, target: ResourceCacheMeta, options?: { proxyFallback?: boolean }) {
+    // Read the object directly when provider CORS allows it. A CORS failure
+    // falls back to a one-time authenticated stream through the app so the
+    // Blob can still enter IndexedDB; the server never persists that copy.
+    const generation = cacheGeneration;
+    const blob = await getResourceBlob(storageKey, options);
     if (!blob) return null;
+    if (generation !== cacheGeneration || target.userScope !== getActiveUserScope()) return null;
     sessionBlobs.set(target.key, blob);
     if (blob.size <= MAX_CACHE_BYTES) await enqueuePersist(target, blob);
     return blob;
@@ -219,4 +252,13 @@ if (typeof window !== "undefined") {
         objectUrls.clear();
         sessionBlobs.clear();
     });
+}
+
+/** Releases in-memory Blob URLs and ignores late downloads after account changes. */
+export function clearResourceBlobCache() {
+    cacheGeneration += 1;
+    objectUrls.forEach((url) => URL.revokeObjectURL(url));
+    objectUrls.clear();
+    sessionBlobs.clear();
+    inFlight.clear();
 }
