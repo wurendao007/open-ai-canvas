@@ -61,7 +61,7 @@ func NormalizeCanvasPayload(raw []byte) ([]byte, error)
 func CanvasStateHash(raw []byte) (string, error)
 ~~~
 
-Parse a JSON object, remove only an explicit allowlist of server-temporary fields, marshal with encoding/json, reject inline media data URLs, and return a lower-case SHA-256 hex digest.
+Parse a JSON object, remove only an explicit allowlist of server-temporary fields, marshal with encoding/json, reject inline media data URLs, and return the complete SHA-256 digest encoded as unpadded base64url.
 
 - [ ] **Step 5: Test and commit this slice.**
 
@@ -159,7 +159,7 @@ Accept optional expectedRevision and expectedStateHash. When supplied, return 40
 
 - [ ] **Step 4: Track remote versions separately from IndexedDB revision.**
 
-Add a remoteCanvasVersions map keyed by user scope and canvas ID. Hydrate it from user-data snapshots/project reads, send it on saves, update acknowledgements, and clear it on logout. Never reuse canvasStoreStorageRevision.
+Add a remoteCanvasVersions map keyed by user scope and canvas ID. Hydrate it from a versioned user-data snapshot or versioned project reads, send it on saves, update acknowledgements, and clear it on logout. Extend the snapshot response only if needed to carry the same revision/stateHash metadata; do not infer server versions from the browser IndexedDB revision.
 
 - [ ] **Step 5: Surface conflicts without stale retries.**
 
