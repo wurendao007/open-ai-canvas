@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"errors"
 	"time"
 
 	"infinite-canvas/backend/internal/model"
@@ -8,6 +9,8 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+var ErrMCPRefreshReplay = errors.New("mcp refresh token replay")
 
 func (r *Repository) CreateMCPDeviceSession(session *model.MCPDeviceSession) error {
 	return r.db.Create(session).Error
@@ -108,26 +111,36 @@ func (r *Repository) MCPTokenByHash(hash string) (*model.MCPToken, error) {
 	return &token, nil
 }
 
-func (r *Repository) RotateMCPRefreshToken(oldHash string, now time.Time, replacement *model.MCPToken) (*model.MCPToken, error) {
+func (r *Repository) RotateMCPRefreshToken(oldHash string, now time.Time, replacement, access *model.MCPToken) (*model.MCPToken, error) {
 	var old model.MCPToken
+	var outcome error
 	err := r.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&old, "token_hash = ?", oldHash).Error; err != nil {
 			return err
 		}
 		if old.Status != "refresh" || !now.Before(old.ExpiresAt) || old.RotatedAt != nil || old.RevokedAt != nil {
 			if old.TokenFamilyID != "" {
-				_ = tx.Model(&model.MCPToken{}).Where("token_family_id = ?", old.TokenFamilyID).
-					Updates(map[string]any{"status": "revoked", "revoked_at": now, "updated_at": now}).Error
+				if err := tx.Model(&model.MCPToken{}).Where("token_family_id = ?", old.TokenFamilyID).
+					Updates(map[string]any{"status": "revoked", "revoked_at": now, "updated_at": now}).Error; err != nil {
+					return err
+				}
 			}
-			return gorm.ErrInvalidData
+			outcome = ErrMCPRefreshReplay
+			return nil
 		}
 		if err := tx.Model(&old).Updates(map[string]any{"status": "rotated", "rotated_at": now, "updated_at": now}).Error; err != nil {
 			return err
 		}
-		return tx.Create(replacement).Error
+		if err := tx.Create(replacement).Error; err != nil {
+			return err
+		}
+		return tx.Create(access).Error
 	})
 	if err != nil {
 		return nil, err
+	}
+	if outcome != nil {
+		return nil, outcome
 	}
 	return &old, nil
 }

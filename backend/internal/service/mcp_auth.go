@@ -30,6 +30,27 @@ type CreateMCPDeviceSessionRequest struct {
 	Scope      string   `json:"-"`
 }
 
+func (r *CreateMCPDeviceSessionRequest) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		ClientName string          `json:"client_name"`
+		Scope      json.RawMessage `json:"scope"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	r.ClientName = raw.ClientName
+	if len(raw.Scope) == 0 || string(raw.Scope) == "null" {
+		return nil
+	}
+	if err := json.Unmarshal(raw.Scope, &r.Scopes); err == nil {
+		return nil
+	}
+	if err := json.Unmarshal(raw.Scope, &r.Scope); err != nil {
+		return err
+	}
+	return nil
+}
+
 type MCPDeviceSessionResponse struct {
 	DeviceCode              string   `json:"device_code"`
 	UserCode                string   `json:"user_code"`
@@ -266,14 +287,12 @@ func (s *Service) RefreshMCPToken(refreshToken string) (*MCPTokenResponse, error
 	}
 	now := time.Now()
 	replacement := &model.MCPToken{ID: newID(), UserID: token.UserID, DeviceSessionID: token.DeviceSessionID, TokenHash: mcpHash(refresh), TokenFamilyID: token.TokenFamilyID, ScopesJSON: token.ScopesJSON, Status: "refresh", ExpiresAt: now.Add(MCPRefreshTokenTTL), CreatedAt: now, UpdatedAt: now}
-	if _, err := s.repo.RotateMCPRefreshToken(mcpHash(raw), now, replacement); err != nil {
+	accessToken := &model.MCPToken{ID: newID(), UserID: token.UserID, DeviceSessionID: token.DeviceSessionID, TokenHash: mcpHash(access), TokenFamilyID: token.TokenFamilyID, ScopesJSON: token.ScopesJSON, Status: "access", ExpiresAt: now.Add(MCPAccessTokenTTL), CreatedAt: now, UpdatedAt: now}
+	if _, err := s.repo.RotateMCPRefreshToken(mcpHash(raw), now, replacement, accessToken); err != nil {
 		// A replay is a security event: revoke the family even though the
 		// rotation transaction itself must roll back.
 		_ = s.repo.RevokeMCPTokenFamily(token.TokenFamilyID, now)
 		return nil, NewAppError(401, "refresh token 无效或已被撤销")
-	}
-	if err := s.repo.CreateMCPToken(&model.MCPToken{ID: newID(), UserID: token.UserID, DeviceSessionID: token.DeviceSessionID, TokenHash: mcpHash(access), TokenFamilyID: token.TokenFamilyID, ScopesJSON: token.ScopesJSON, Status: "access", ExpiresAt: now.Add(MCPAccessTokenTTL), CreatedAt: now, UpdatedAt: now}); err != nil {
-		return nil, err
 	}
 	return &MCPTokenResponse{AccessToken: access, RefreshToken: refresh, TokenType: "Bearer", ExpiresIn: int(MCPAccessTokenTTL.Seconds()), Scope: decodeMCPScopes(token.ScopesJSON)}, nil
 }
