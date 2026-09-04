@@ -191,3 +191,62 @@ func TestCanvasProjectSummarySerializesRevisionZeroAndStateHash(t *testing.T) {
 		t.Fatalf("state hash omitted: %s", body)
 	}
 }
+
+func TestCanvasProjectSnapshotDerivesPayloadAndVersionFromSameRows(t *testing.T) {
+	svc, _, db := newMCPProjectTestService(t, "snapshot")
+	initialPayload := json.RawMessage(`{"id":"canvas-1","title":"初稿","nodes":[],"connections":[]}`)
+	first, err := svc.SaveCanvasProjectWithPrecondition("user-1", initialPayload, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedPayload := json.RawMessage(`{"id":"canvas-1","title":"并发更新","nodes":[],"connections":[]}`)
+	updatedHash, err := model.CanvasStateHash(updatedPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	callbackName := "test:mutate_canvas_after_snapshot_payload_query"
+	mutated := false
+	if err := db.Callback().Query().After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		if mutated || tx.Statement.Table != "canvas_projects" || len(tx.Statement.Selects) > 0 {
+			return
+		}
+		mutated = true
+		if err := tx.Session(&gorm.Session{NewDB: true}).Model(&model.CanvasProject{}).
+			Where("id = ? AND user_id = ?", "canvas-1", "user-1").
+			Updates(map[string]any{
+				"title":        "并发更新",
+				"payload_json": string(updatedPayload),
+				"revision":     first.Revision + 1,
+				"state_hash":   updatedHash,
+			}).Error; err != nil {
+			tx.AddError(err)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = db.Callback().Query().Remove(callbackName)
+	})
+
+	snapshot, err := svc.UserDataSnapshot("user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mutated {
+		t.Fatal("expected test callback to simulate a concurrent canvas update")
+	}
+	if len(snapshot.Projects) != 1 || len(snapshot.ProjectVersions) != 1 {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	payloadHash, err := model.CanvasStateHash(snapshot.Projects[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := snapshot.ProjectVersions[0]
+	if version.Revision != first.Revision || version.StateHash != payloadHash {
+		t.Fatalf("snapshot mixed rows: payloadHash=%s version=%#v", payloadHash, version)
+	}
+	if version.StateHash == updatedHash {
+		t.Fatalf("snapshot version came from a later row: %#v", version)
+	}
+}

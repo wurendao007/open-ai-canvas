@@ -45,15 +45,24 @@ func (s *Service) UserDataSnapshot(userID string) (UserDataSnapshot, error) {
 	if err != nil {
 		return UserDataSnapshot{}, err
 	}
-	projects, err := s.UserCanvasProjects(userID)
+	projectRows, err := s.repo.CanvasProjects(userID)
 	if err != nil {
 		return UserDataSnapshot{}, err
 	}
-	versions, err := s.UserCanvasProjectSummaries(userID)
-	if err != nil {
-		return UserDataSnapshot{}, err
-	}
+	projects, versions := canvasSnapshotProjectsFromRows(projectRows)
 	return UserDataSnapshot{Assets: assets, Projects: projects, ProjectVersions: versions}, nil
+}
+
+func canvasSnapshotProjectsFromRows(projects []model.CanvasProject) ([]json.RawMessage, []UserDataSummary) {
+	payloads := make([]json.RawMessage, 0, len(projects))
+	versions := make([]UserDataSummary, 0, len(projects))
+	for _, project := range projects {
+		if strings.TrimSpace(project.PayloadJSON) != "" {
+			payloads = append(payloads, json.RawMessage(project.PayloadJSON))
+		}
+		versions = append(versions, UserDataSummary{ID: project.ID, Title: project.Title, CreatedAt: project.CreatedAt, UpdatedAt: project.UpdatedAt, Revision: project.Revision, StateHash: project.StateHash, HashSource: "server"})
+	}
+	return payloads, versions
 }
 
 func (s *Service) UserAssetSummaries(userID string) ([]UserDataSummary, error) {
