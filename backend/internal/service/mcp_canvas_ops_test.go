@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -58,12 +59,74 @@ func TestApplyMCPCanvasOpsIsAtomicAndCascadesConnections(t *testing.T) {
 }
 
 func TestDecodeMCPCanvasSnapshotPreservesMetadataAndRejectsDataURL(t *testing.T) {
-	good := json.RawMessage(`{"id":"c","title":"x","nodes":[{"id":"n","type":"text","position":{"x":1,"y":2},"width":10,"height":20,"metadata":{"future":{"enabled":true}}}],"connections":[],"viewport":{"x":0,"y":0,"k":1}}`)
+	good := json.RawMessage(`{"id":"c","futureTop":{"keep":true},"title":"x","nodes":[{"id":"n","type":"text","futureNode":"keep","position":{"x":1,"y":2},"width":10,"height":20,"metadata":{"future":{"enabled":true}}},{"id":"n2","type":"image","position":{"x":20,"y":2},"width":10,"height":20},{"id":"n3","type":"audio","position":{"x":40,"y":2},"width":10,"height":20}],"connections":[{"id":"edge","fromNodeId":"n","toNodeId":"n2","futureConnection":"keep"},{"id":"edge2","fromNodeId":"n2","toNodeId":"n3"}],"viewport":{"x":0,"y":0,"k":1}}`)
 	snapshot, err := DecodeMCPCanvasSnapshot(good)
 	if err != nil || snapshot.Nodes[0].Metadata["future"] == nil {
 		t.Fatalf("decode = %#v, err = %v", snapshot, err)
 	}
+	encoded, _ := json.Marshal(snapshot)
+	if !json.Valid(encoded) || !jsonContains(encoded, "futureTop") || !jsonContains(encoded, "futureNode") || !jsonContains(encoded, "futureConnection") {
+		t.Fatalf("unknown fields were not preserved: %s", encoded)
+	}
 	if _, err := DecodeMCPCanvasSnapshot(json.RawMessage(`{"nodes":[{"id":"n","type":"image","metadata":{"url":"data:image/png;base64,AA"}}]}`)); err == nil {
 		t.Fatal("data URL unexpectedly accepted")
 	}
+}
+
+func TestDecodeMCPCanvasSnapshotRejectsCorruptStructure(t *testing.T) {
+	cases := []string{
+		`{"nodes":[{"id":"n","type":"text"},{"id":"n","type":"image"}]}`,
+		`{"nodes":[{"id":"n","type":"unknown"}]}`,
+		`{"nodes":[{"id":"n","type":"text","width":-1}]}`,
+		`{"nodes":[{"id":"n","type":"text"}],"connections":[{"id":"c","fromNodeId":"n","toNodeId":"missing"}]}`,
+	}
+	for _, raw := range cases {
+		if _, err := DecodeMCPCanvasSnapshot(json.RawMessage(raw)); err == nil {
+			t.Fatalf("DecodeMCPCanvasSnapshot(%s) unexpectedly succeeded", raw)
+		}
+	}
+}
+
+func TestSanitizeMCPOutputRecursesThroughTypedValues(t *testing.T) {
+	type nested struct {
+		URL     string            `json:"url"`
+		APIKey  string            `json:"api_key"`
+		Label   string            `json:"label"`
+		Details map[string]string `json:"details"`
+	}
+	value := SanitizeMCPOutput(nested{URL: "https://private.example", APIKey: "secret", Label: "ok", Details: map[string]string{"authorization": "bearer"}})
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "private.example") || strings.Contains(string(encoded), "secret") || strings.Contains(string(encoded), "bearer") || !strings.Contains(string(encoded), "ok") {
+		t.Fatalf("sanitized value = %s", encoded)
+	}
+}
+
+func TestUpdateNodePatchNumbersAreValidatedAndApplied(t *testing.T) {
+	snapshot := testMCPSnapshot()
+	validated := ValidateMCPCanvasOps(snapshot, []MCPCanvasOp{{Type: "update_node", ID: "n1", Patch: map[string]any{
+		"width": 240, "height": 90, "position": map[string]any{"x": 12, "y": 34},
+	}}})
+	if !validated.OK {
+		t.Fatalf("integer patch unexpectedly rejected: %#v", validated.Issues)
+	}
+	after, _, err := ApplyMCPCanvasOps(snapshot, []MCPCanvasOp{{Type: "update_node", ID: "n1", Patch: map[string]any{
+		"width": 240, "height": 90, "position": map[string]any{"x": 12, "y": 34},
+	}}})
+	if err != nil {
+		t.Fatalf("ApplyMCPCanvasOps() error = %v", err)
+	}
+	if got := after.Nodes[0]; got.Width != 240 || got.Height != 90 || got.Position != (MCPPosition{X: 12, Y: 34}) {
+		t.Fatalf("patched node = %#v", got)
+	}
+	bad := ValidateMCPCanvasOps(snapshot, []MCPCanvasOp{{Type: "update_node", ID: "n1", Patch: map[string]any{"width": "wide"}}})
+	if bad.OK {
+		t.Fatal("string width patch unexpectedly accepted")
+	}
+}
+
+func jsonContains(raw []byte, key string) bool {
+	return string(raw) != "" && len(raw) > 0 && strings.Contains(string(raw), key)
 }

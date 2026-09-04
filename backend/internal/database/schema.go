@@ -83,6 +83,7 @@ func Models() []any {
 		&model.CanvasProject{},
 		&model.MCPDeviceSession{},
 		&model.MCPToken{},
+		&model.MCPAuditEvent{},
 		&model.CanvasShare{},
 		&model.PromptTemplate{},
 		&model.UserPromptCustomization{},

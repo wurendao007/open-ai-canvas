@@ -46,6 +46,49 @@ func (r *Repository) ApplyCanvasMCPAtomic(userID string, canvasID string, expect
 	return &current, current.ID != "" && current.Revision == project.Revision, nil
 }
 
+// RollbackCanvasMCPAtomic restores the previous project only while the
+// conditional revision/hash still identifies the MCP write being compensated.
+// A concurrent user write therefore wins and is never overwritten.
+func (r *Repository) RollbackCanvasMCPAtomic(userID, canvasID string, expectedRevision int64, expectedHash string, previous *model.CanvasProject, auditID string) (bool, error) {
+	rolledBack := false
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		var current model.CanvasProject
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&current, "id = ? AND user_id = ?", canvasID, userID).Error; err != nil {
+			return err
+		}
+		if current.Revision != expectedRevision || current.StateHash != strings.TrimSpace(expectedHash) {
+			return nil
+		}
+		result := tx.Model(&model.CanvasProject{}).Where("id = ? AND user_id = ? AND revision = ? AND state_hash = ?", canvasID, userID, expectedRevision, expectedHash).Updates(map[string]any{
+			"project_id": previous.ProjectID, "title": previous.Title, "payload_json": previous.PayloadJSON,
+			"revision": previous.Revision, "state_hash": previous.StateHash, "updated_at": previous.UpdatedAt,
+		})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return nil
+		}
+		if strings.TrimSpace(auditID) != "" {
+			if err := tx.Delete(&model.MCPAuditEvent{}, "id = ? AND user_id = ? AND canvas_id = ?", auditID, userID, canvasID).Error; err != nil {
+				return err
+			}
+		}
+		rolledBack = true
+		return nil
+	})
+	return rolledBack, err
+}
+
+func (r *Repository) DeleteMCPTask(userID, taskID string) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("user_id = ? AND task_id = ?", userID, taskID).Delete(&model.TaskTextDelta{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&model.Task{}, "id = ? AND user_id = ?", taskID, userID).Error
+	})
+}
+
 func (r *Repository) MCPAuditEventsForUser(userID string, limit int) ([]model.MCPAuditEvent, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 100

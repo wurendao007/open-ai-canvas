@@ -5,13 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"infinite-canvas/backend/internal/model"
 
 	"gorm.io/gorm"
 )
+
+var mcpGenerationMu sync.Mutex
 
 type MCPToolRequest struct {
 	Ops               []MCPCanvasOp `json:"ops,omitempty"`
@@ -204,17 +208,23 @@ func (s *Service) ApplyMCPCanvasOps(userID, canvasID string, req MCPToolRequest)
 	if !ok {
 		return nil, NewAppError(409, "画布已被其他窗口或 MCP 修改，请重新加载/合并")
 	}
-	result := map[string]any{"project": sanitizeMCPOutput(after), "verification": verification, "revision": stored.Revision, "stateHash": stored.StateHash, "hashSource": "server"}
+	var generationResult *MCPGenerationResult
 	for _, op := range req.Ops {
-		if op.Type == "run_generation" {
-			rev := stored.Revision
-			generation, genErr := s.SubmitMCPGeneration(userID, canvasID, MCPGenerationRequest{NodeID: op.NodeID, Mode: op.Mode, Prompt: op.Prompt, Retry: op.Retry, ClientOperationID: op.ID, ExpectedRevision: &rev, ExpectedStateHash: stored.StateHash})
-			if genErr != nil {
-				return nil, genErr
-			}
-			result["generation"] = generation
-			break
+		if op.Type != "run_generation" {
+			continue
 		}
+		generationResult, err = s.SubmitMCPGeneration(userID, canvasID, MCPGenerationRequest{NodeID: op.NodeID, Mode: op.Mode, Prompt: op.Prompt, Retry: op.Retry, ClientOperationID: op.ID, ExpectedRevision: &stored.Revision, ExpectedStateHash: stored.StateHash, RequestID: req.RequestID, TokenFamilyID: req.TokenFamilyID})
+		if err != nil {
+			if _, rollbackErr := s.repo.RollbackCanvasMCPAtomic(userID, canvasID, stored.Revision, stored.StateHash, project, audit.ID); rollbackErr != nil {
+				return nil, fmt.Errorf("生成失败：%v；画布回滚失败：%w", err, rollbackErr)
+			}
+			return nil, err
+		}
+		break
+	}
+	result := map[string]any{"project": sanitizeMCPOutput(after), "verification": verification, "revision": stored.Revision, "stateHash": stored.StateHash, "hashSource": "server"}
+	if generationResult != nil {
+		result["generation"] = generationResult
 	}
 	return result, nil
 }
@@ -233,6 +243,22 @@ func (s *Service) SubmitMCPGeneration(userID, canvasID string, req MCPGeneration
 	if project.Revision != *req.ExpectedRevision || project.StateHash != req.ExpectedStateHash {
 		return nil, NewAppError(http.StatusConflict, "画布已被其他窗口或 MCP 修改，请重新加载/合并")
 	}
+	snapshot, err := DecodeMCPCanvasSnapshot(json.RawMessage(project.PayloadJSON))
+	if err != nil {
+		return nil, NewAppError(http.StatusUnprocessableEntity, "画布快照无效")
+	}
+	var target MCPCanvasNode
+	found := false
+	for _, node := range snapshot.Nodes {
+		if node.ID == strings.TrimSpace(req.NodeID) {
+			target = node
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, NewAppError(http.StatusUnprocessableEntity, "生成节点不存在")
+	}
 	mode := strings.TrimSpace(req.Mode)
 	if mode == "" {
 		mode = "image"
@@ -240,11 +266,19 @@ func (s *Service) SubmitMCPGeneration(userID, canvasID string, req MCPGeneration
 	if mode != "text" && mode != "image" && mode != "video" && mode != "audio" {
 		return nil, NewAppError(422, "不支持的生成模式")
 	}
+	if (mode == "image" || mode == "video" || mode == "audio") && !mcpIsMediaType(target.Type) {
+		return nil, NewAppError(422, "生成模式与节点类型不匹配")
+	}
+	if mode == "text" && target.Type != "text" && target.Type != "script" {
+		return nil, NewAppError(422, "生成模式与节点类型不匹配")
+	}
 	identity := strings.TrimSpace(req.IdempotencyKey)
 	if identity == "" {
 		identity = strings.TrimSpace(req.ClientOperationID)
 	}
 	if identity != "" {
+		mcpGenerationMu.Lock()
+		defer mcpGenerationMu.Unlock()
 		if existing, e := s.repo.MCPTaskByIdempotency(userID, canvasID, req.NodeID, identity); e == nil && existing != nil {
 			return &MCPGenerationResult{Submitted: true, TaskID: existing.ID, NodeID: req.NodeID, Status: string(existing.Status)}, nil
 		}
@@ -260,7 +294,18 @@ func (s *Service) SubmitMCPGeneration(userID, canvasID string, req MCPGeneration
 	if err != nil {
 		return nil, err
 	}
-	_ = s.repo.CreateMCPAuditEvent(&model.MCPAuditEvent{ID: newID(), UserID: userID, TokenFamilyID: req.TokenFamilyID, CanvasID: canvasID, Tool: "canvas_generate", RequestID: req.RequestID, OperationCount: 1, RevisionBefore: project.Revision, RevisionAfter: project.Revision, SummaryJSON: mcpOpsSummary([]MCPCanvasOp{{Type: "run_generation", NodeID: req.NodeID}}), CreatedAt: time.Now()})
+	if err := s.repo.CreateMCPAuditEvent(&model.MCPAuditEvent{ID: newID(), UserID: userID, TokenFamilyID: req.TokenFamilyID, CanvasID: canvasID, Tool: "canvas_generate", RequestID: req.RequestID, OperationCount: 1, RevisionBefore: project.Revision, RevisionAfter: project.Revision, SummaryJSON: mcpOpsSummary([]MCPCanvasOp{{Type: "run_generation", NodeID: req.NodeID}}), CreatedAt: time.Now()}); err != nil {
+		cleanupErr := s.repo.DeleteMCPTask(userID, task.ID)
+		if task.BillingOrderID != "" {
+			if refundErr := s.taskBilling().RefundBilling(task.BillingOrderID, "MCP 生成审计写入失败"); cleanupErr == nil {
+				cleanupErr = refundErr
+			}
+		}
+		if cleanupErr != nil {
+			return nil, fmt.Errorf("生成审计写入失败：%v；任务清理失败：%w", err, cleanupErr)
+		}
+		return nil, err
+	}
 	return &MCPGenerationResult{Submitted: true, TaskID: task.ID, NodeID: req.NodeID, Status: string(task.Status)}, nil
 }
 
@@ -313,13 +358,32 @@ func projectMCPResources(ns []MCPCanvasNode) []any {
 	}
 	return out
 }
+func SanitizeMCPOutput(v any) any { return sanitizeMCPOutput(v) }
+
 func sanitizeMCPOutput(v any) any {
+	if snapshot, ok := v.(MCPCanvasSnapshot); ok {
+		raw, err := marshalMCPSnapshot(snapshot)
+		if err == nil {
+			var decoded any
+			if json.Unmarshal(raw, &decoded) == nil {
+				return sanitizeMCPOutput(decoded)
+			}
+		}
+	}
+	if node, ok := v.(MCPCanvasNode); ok {
+		raw, err := json.Marshal(node)
+		if err == nil {
+			var decoded any
+			if json.Unmarshal(raw, &decoded) == nil {
+				return sanitizeMCPOutput(decoded)
+			}
+		}
+	}
 	switch x := v.(type) {
 	case map[string]any:
 		out := map[string]any{}
 		for k, val := range x {
-			switch strings.ToLower(k) {
-			case "url", "publicurl", "downloadurl", "apikey", "token", "cookie", "access_token", "refresh_token":
+			if isMCPSecretKey(k) {
 				continue
 			}
 			out[k] = sanitizeMCPOutput(val)
@@ -332,7 +396,36 @@ func sanitizeMCPOutput(v any) any {
 		}
 		return out
 	default:
+		rv := reflect.ValueOf(v)
+		if !rv.IsValid() {
+			return nil
+		}
+		if rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
+			if rv.IsNil() {
+				return nil
+			}
+			return sanitizeMCPOutput(rv.Elem().Interface())
+		}
+		if rv.Kind() == reflect.Struct || rv.Kind() == reflect.Map || rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
+			raw, err := json.Marshal(v)
+			if err == nil {
+				var decoded any
+				if json.Unmarshal(raw, &decoded) == nil {
+					return sanitizeMCPOutput(decoded)
+				}
+			}
+		}
 		return v
+	}
+}
+
+func isMCPSecretKey(key string) bool {
+	normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "").Replace(strings.TrimSpace(key)))
+	switch normalized {
+	case "url", "publicurl", "downloadurl", "apikey", "token", "cookie", "accesstoken", "refreshtoken", "authorization", "secret", "password":
+		return true
+	default:
+		return false
 	}
 }
 func mcpOpsSummary(ops []MCPCanvasOp) string {

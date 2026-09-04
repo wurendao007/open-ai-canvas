@@ -28,13 +28,15 @@ type MCPCanvasNode struct {
 	Height   float64        `json:"height"`
 	ParentID string         `json:"parentId,omitempty"`
 	Metadata map[string]any `json:"metadata,omitempty"`
+	Extra    map[string]any `json:"-"`
 }
 type MCPCanvasConnection struct {
-	ID           string `json:"id"`
-	FromNodeID   string `json:"fromNodeId"`
-	ToNodeID     string `json:"toNodeId"`
-	FromHandleID string `json:"fromHandleId,omitempty"`
-	ToHandleID   string `json:"toHandleId,omitempty"`
+	ID           string         `json:"id"`
+	FromNodeID   string         `json:"fromNodeId"`
+	ToNodeID     string         `json:"toNodeId"`
+	FromHandleID string         `json:"fromHandleId,omitempty"`
+	ToHandleID   string         `json:"toHandleId,omitempty"`
+	Extra        map[string]any `json:"-"`
 }
 type MCPCanvasSnapshot struct {
 	ID              string                `json:"id,omitempty"`
@@ -46,6 +48,64 @@ type MCPCanvasSnapshot struct {
 	SelectedNodeIDs []string              `json:"selectedNodeIds,omitempty"`
 	Nodes           []MCPCanvasNode       `json:"nodes"`
 	Connections     []MCPCanvasConnection `json:"connections"`
+	Extra           map[string]any        `json:"-"`
+}
+
+func (n MCPCanvasNode) MarshalJSON() ([]byte, error) {
+	value := map[string]any{
+		"id": n.ID, "type": n.Type, "position": n.Position, "width": n.Width, "height": n.Height,
+		"metadata": n.Metadata,
+	}
+	if n.Title != "" {
+		value["title"] = n.Title
+	}
+	if n.ParentID != "" {
+		value["parentId"] = n.ParentID
+	}
+	for key, item := range n.Extra {
+		value[key] = item
+	}
+	return json.Marshal(value)
+}
+
+func (c MCPCanvasConnection) MarshalJSON() ([]byte, error) {
+	value := map[string]any{"id": c.ID, "fromNodeId": c.FromNodeID, "toNodeId": c.ToNodeID}
+	if c.FromHandleID != "" {
+		value["fromHandleId"] = c.FromHandleID
+	}
+	if c.ToHandleID != "" {
+		value["toHandleId"] = c.ToHandleID
+	}
+	for key, item := range c.Extra {
+		value[key] = item
+	}
+	return json.Marshal(value)
+}
+
+func (s MCPCanvasSnapshot) MarshalJSON() ([]byte, error) {
+	value := map[string]any{"viewport": s.Viewport, "nodes": s.Nodes, "connections": s.Connections}
+	if s.ID != "" {
+		value["id"] = s.ID
+	}
+	if s.ProjectID != "" {
+		value["projectId"] = s.ProjectID
+	}
+	if s.DomainProjectID != "" {
+		value["domainProjectId"] = s.DomainProjectID
+	}
+	if s.Title != "" {
+		value["title"] = s.Title
+	}
+	if s.Identity != nil {
+		value["identity"] = s.Identity
+	}
+	if len(s.SelectedNodeIDs) > 0 {
+		value["selectedNodeIds"] = s.SelectedNodeIDs
+	}
+	for key, item := range s.Extra {
+		value[key] = item
+	}
+	return json.Marshal(value)
 }
 
 type MCPCanvasOp struct {
@@ -128,18 +188,106 @@ func DecodeMCPCanvasSnapshot(raw json.RawMessage) (MCPCanvasSnapshot, error) {
 	if snapshot.Connections == nil {
 		snapshot.Connections = []MCPCanvasConnection{}
 	}
+	if snapshot.Viewport.K == 0 {
+		snapshot.Viewport.K = 1
+	}
+	if !finite(snapshot.Viewport.X) || !finite(snapshot.Viewport.Y) || !finite(snapshot.Viewport.K) || snapshot.Viewport.K < 0.05 || snapshot.Viewport.K > 8 {
+		return snapshot, errors.New("视口参数无效")
+	}
+	nodeIDs := map[string]bool{}
 	for i := range snapshot.Nodes {
-		if snapshot.Nodes[i].ID == "" || snapshot.Nodes[i].Type == "" {
+		node := &snapshot.Nodes[i]
+		node.ID = strings.TrimSpace(node.ID)
+		node.Type = strings.TrimSpace(node.Type)
+		if node.ID == "" || node.Type == "" {
 			return snapshot, fmt.Errorf("节点 %d 缺少 id/type", i)
 		}
-		if snapshot.Nodes[i].Width == 0 {
-			snapshot.Nodes[i].Width = 320
+		if nodeIDs[node.ID] {
+			return snapshot, fmt.Errorf("节点 id 重复：%s", node.ID)
 		}
-		if snapshot.Nodes[i].Height == 0 {
-			snapshot.Nodes[i].Height = 240
+		nodeIDs[node.ID] = true
+		if !mcpSupportedNodeTypes[node.Type] {
+			return snapshot, fmt.Errorf("节点 %d 类型不受支持：%s", i, node.Type)
 		}
-		if snapshot.Nodes[i].Metadata == nil {
-			snapshot.Nodes[i].Metadata = map[string]any{}
+		if node.Width == 0 {
+			node.Width = 320
+		}
+		if node.Height == 0 {
+			node.Height = 240
+		}
+		if !finite(node.Position.X) || !finite(node.Position.Y) {
+			return snapshot, fmt.Errorf("节点 %d 坐标必须是有限数字", i)
+		}
+		if !finite(node.Width) || node.Width <= 0 || node.Width > 10000 || !finite(node.Height) || node.Height <= 0 || node.Height > 10000 {
+			return snapshot, fmt.Errorf("节点 %d 尺寸必须在 (0,10000] 范围内", i)
+		}
+		if node.Metadata == nil {
+			node.Metadata = map[string]any{}
+		}
+		if rawNodes, ok := object["nodes"].([]any); ok && i < len(rawNodes) {
+			if rawNode, ok := rawNodes[i].(map[string]any); ok {
+				extra := map[string]any{}
+				for key, value := range rawNode {
+					switch key {
+					case "id", "type", "title", "position", "width", "height", "parentId", "metadata":
+					default:
+						extra[key] = value
+					}
+				}
+				node.Extra = extra
+			}
+		}
+	}
+	for i := range snapshot.Nodes {
+		if parent := strings.TrimSpace(snapshot.Nodes[i].ParentID); parent != "" && !nodeIDs[parent] {
+			return snapshot, fmt.Errorf("节点 %d 的 parentId 不存在：%s", i, parent)
+		}
+	}
+	connectionIDs := map[string]bool{}
+	connectionKeys := map[string]bool{}
+	for i := range snapshot.Connections {
+		connection := &snapshot.Connections[i]
+		connection.ID = strings.TrimSpace(connection.ID)
+		connection.FromNodeID = strings.TrimSpace(connection.FromNodeID)
+		connection.ToNodeID = strings.TrimSpace(connection.ToNodeID)
+		if connection.ID == "" || connection.FromNodeID == "" || connection.ToNodeID == "" {
+			return snapshot, fmt.Errorf("连线 %d 缺少 id 或端点", i)
+		}
+		if connectionIDs[connection.ID] {
+			return snapshot, fmt.Errorf("连线 id 重复：%s", connection.ID)
+		}
+		if !nodeIDs[connection.FromNodeID] || !nodeIDs[connection.ToNodeID] {
+			return snapshot, fmt.Errorf("连线 %d 引用了不存在的节点", i)
+		}
+		if connection.FromNodeID == connection.ToNodeID {
+			return snapshot, fmt.Errorf("连线 %d 不能连接节点自身", i)
+		}
+		key := mcpConnectionKey(*connection)
+		if connectionKeys[key] {
+			return snapshot, fmt.Errorf("连线 %d 的端点和 handle 重复", i)
+		}
+		connectionIDs[connection.ID] = true
+		connectionKeys[key] = true
+		if rawConnections, ok := object["connections"].([]any); ok && i < len(rawConnections) {
+			if rawConnection, ok := rawConnections[i].(map[string]any); ok {
+				extra := map[string]any{}
+				for key, value := range rawConnection {
+					switch key {
+					case "id", "fromNodeId", "toNodeId", "fromHandleId", "toHandleId":
+					default:
+						extra[key] = value
+					}
+				}
+				connection.Extra = extra
+			}
+		}
+	}
+	snapshot.Extra = map[string]any{}
+	for key, value := range object {
+		switch key {
+		case "id", "projectId", "domainProjectId", "canvasProjectId", "title", "identity", "viewport", "selectedNodeIds", "nodes", "connections":
+		default:
+			snapshot.Extra[key] = value
 		}
 	}
 	return snapshot, nil
@@ -170,10 +318,7 @@ func ValidateMCPCanvasOps(snapshot MCPCanvasSnapshot, ops []MCPCanvasOp) MCPOpsV
 	for i, op := range ops {
 		switch op.Type {
 		case "add_node":
-			id := op.ID
-			if id == "" {
-				id = fmt.Sprintf("__mcp_new_%d", i)
-			}
+			id := mcpOpNodeID(op, i)
 			if _, ok := nodes[id]; ok {
 				issue(i, "新增节点 id 重复")
 			}
@@ -190,6 +335,7 @@ func ValidateMCPCanvasOps(snapshot MCPCanvasSnapshot, ops []MCPCanvasOp) MCPOpsV
 			if _, ok := op.Patch["type"]; ok {
 				issue(i, "不能修改节点类型")
 			}
+			validateMCPNodePatchTypes(issue, i, op.Patch)
 			validateMCPNodeNumbers(issue, i, op.Position, nil, nil, numberFromPatch(op.Patch, "width"), numberFromPatch(op.Patch, "height"))
 			node := nodes[op.ID]
 			if mcpIsMediaType(node.Type) && (hasMCPStatus(op.Metadata) || hasMCPStatusMap(op.Patch)) {
@@ -261,10 +407,7 @@ func ValidateMCPCanvasOps(snapshot MCPCanvasSnapshot, ops []MCPCanvasOp) MCPOpsV
 			if op.FromNodeID == op.ToNodeID {
 				issue(i, "不能连接节点自身")
 			}
-			id := op.ID
-			if id == "" {
-				id = fmt.Sprintf("__mcp_conn_%d", i)
-			}
+			id := mcpOpConnectionID(op, i)
 			if _, ok := connections[id]; ok {
 				issue(i, "连线 id 重复")
 			}
@@ -290,8 +433,17 @@ func ValidateMCPCanvasOps(snapshot MCPCanvasSnapshot, ops []MCPCanvasOp) MCPOpsV
 		case "run_generation":
 			requireNode(i, op.NodeID, "生成目标")
 			node := nodes[op.NodeID]
-			if op.Mode != "" && op.Mode != node.Type && !(op.Mode == "text" && node.Type == "script") {
+			mode := strings.TrimSpace(op.Mode)
+			if mode == "" {
+				mode = "image"
+			}
+			if mode != "text" && mode != "image" && mode != "video" && mode != "audio" {
+				issue(i, "不支持的生成模式")
+			} else if mode != node.Type && !(mode == "text" && node.Type == "script") {
 				issue(i, "生成模式与节点类型不匹配")
+			}
+			if strings.TrimSpace(op.Prompt) == "" {
+				issue(i, "生成提示词不能为空")
 			}
 		default:
 			issue(i, "不支持的操作类型")
@@ -319,10 +471,7 @@ func ApplyMCPCanvasOps(snapshot MCPCanvasSnapshot, ops []MCPCanvasOp) (MCPCanvas
 	for i, op := range ops {
 		switch op.Type {
 		case "add_node":
-			id := op.ID
-			if id == "" {
-				id = fmt.Sprintf("mcp-node-%d", i)
-			}
+			id := mcpOpNodeID(op, i)
 			node := MCPCanvasNode{ID: id, Type: op.NodeType, Title: op.Title, Position: mcpOpPosition(op), Width: mcpDimension(op.Width, 320), Height: mcpDimension(op.Height, 240), Metadata: cloneMap(op.Metadata)}
 			copyOf.Nodes = append(copyOf.Nodes, node)
 			verification.CreatedNodeIDs = append(verification.CreatedNodeIDs, id)
@@ -386,10 +535,7 @@ func ApplyMCPCanvasOps(snapshot MCPCanvasSnapshot, ops []MCPCanvasOp) (MCPCanvas
 			}
 			copyOf.Connections = conns
 		case "connect_nodes":
-			id := op.ID
-			if id == "" {
-				id = fmt.Sprintf("mcp-connection-%d", i)
-			}
+			id := mcpOpConnectionID(op, i)
 			copyOf.Connections = append(copyOf.Connections, MCPCanvasConnection{ID: id, FromNodeID: op.FromNodeID, ToNodeID: op.ToNodeID, FromHandleID: op.FromHandleID, ToHandleID: op.ToHandleID})
 			verification.CreatedConnectionIDs = append(verification.CreatedConnectionIDs, id)
 		case "set_viewport":
@@ -404,14 +550,14 @@ func ApplyMCPCanvasOps(snapshot MCPCanvasSnapshot, ops []MCPCanvasOp) (MCPCanvas
 }
 
 func hashMCPSnapshot(snapshot MCPCanvasSnapshot) (string, error) {
-	raw, err := json.Marshal(snapshot)
+	raw, err := marshalMCPSnapshot(snapshot)
 	if err != nil {
 		return "", err
 	}
 	return model.CanvasStateHash(raw)
 }
 func cloneMCPSnapshot(s MCPCanvasSnapshot) (MCPCanvasSnapshot, error) {
-	raw, e := json.Marshal(s)
+	raw, e := marshalMCPSnapshot(s)
 	if e != nil {
 		return s, e
 	}
@@ -434,6 +580,18 @@ func mcpOpPosition(op MCPCanvasOp) MCPPosition {
 		return *op.Position
 	}
 	return MCPPosition{X: valueFloat(op.X), Y: valueFloat(op.Y)}
+}
+func mcpOpNodeID(op MCPCanvasOp, index int) string {
+	if strings.TrimSpace(op.ID) != "" {
+		return strings.TrimSpace(op.ID)
+	}
+	return fmt.Sprintf("mcp-node-%d", index)
+}
+func mcpOpConnectionID(op MCPCanvasOp, index int) string {
+	if strings.TrimSpace(op.ID) != "" {
+		return strings.TrimSpace(op.ID)
+	}
+	return fmt.Sprintf("mcp-connection-%d", index)
 }
 func valueFloat(v *float64) float64 {
 	if v == nil {
@@ -470,11 +628,48 @@ func numberFromPatch(p map[string]any, k string) *float64 {
 	if !ok {
 		return nil
 	}
-	n, ok := v.(float64)
-	if !ok {
-		return nil
+	switch n := v.(type) {
+	case float64:
+		return &n
+	case float32:
+		value := float64(n)
+		return &value
+	case int:
+		value := float64(n)
+		return &value
+	case int32:
+		value := float64(n)
+		return &value
+	case int64:
+		value := float64(n)
+		return &value
+	case json.Number:
+		value, err := n.Float64()
+		if err == nil {
+			return &value
+		}
 	}
-	return &n
+	return nil
+}
+
+func validateMCPNodePatchTypes(issue func(int, string), index int, patch map[string]any) {
+	for _, key := range []string{"width", "height"} {
+		if _, ok := patch[key]; ok && numberFromPatch(patch, key) == nil {
+			issue(index, fmt.Sprintf("节点 %s 必须是数字", key))
+		}
+	}
+	if raw, ok := patch["position"]; ok {
+		position, ok := raw.(map[string]any)
+		if !ok {
+			issue(index, "节点 position 必须是对象")
+			return
+		}
+		for _, key := range []string{"x", "y"} {
+			if _, exists := position[key]; exists && numberFromPatch(position, key) == nil {
+				issue(index, fmt.Sprintf("节点 position.%s 必须是数字", key))
+			}
+		}
+	}
 }
 
 func pointerIfNonZero(v float64) *float64 {
@@ -488,29 +683,35 @@ func applyMCPNodePatch(node *MCPCanvasNode, op MCPCanvasOp) {
 	if v, ok := patch["title"].(string); ok {
 		node.Title = v
 	}
-	if v, ok := patch["width"].(float64); ok {
-		node.Width = v
+	if v := numberFromPatch(patch, "width"); v != nil {
+		node.Width = *v
 	}
-	if v, ok := patch["height"].(float64); ok {
-		node.Height = v
+	if v := numberFromPatch(patch, "height"); v != nil {
+		node.Height = *v
 	}
 	if raw, ok := patch["position"].(map[string]any); ok {
-		if x, ok := raw["x"].(float64); ok {
-			node.Position.X = x
+		if x := numberFromPatch(raw, "x"); x != nil {
+			node.Position.X = *x
 		}
-		if y, ok := raw["y"].(float64); ok {
-			node.Position.Y = y
+		if y := numberFromPatch(raw, "y"); y != nil {
+			node.Position.Y = *y
 		}
 	}
 	if op.Position != nil {
 		node.Position = *op.Position
 	}
 	if op.Metadata != nil {
+		if node.Metadata == nil {
+			node.Metadata = map[string]any{}
+		}
 		for k, v := range op.Metadata {
 			node.Metadata[k] = v
 		}
 	}
 	if raw, ok := patch["metadata"].(map[string]any); ok {
+		if node.Metadata == nil {
+			node.Metadata = map[string]any{}
+		}
 		for k, v := range raw {
 			node.Metadata[k] = v
 		}
@@ -561,4 +762,8 @@ func containsInlineMCPMedia(value any) bool {
 		}
 	}
 	return false
+}
+
+func marshalMCPSnapshot(snapshot MCPCanvasSnapshot) ([]byte, error) {
+	return json.Marshal(snapshot)
 }

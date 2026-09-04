@@ -35,12 +35,12 @@ func RegisterMCPCanvasRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
-		var snapshot any
-		if json.Unmarshal(project.Payload, &snapshot) != nil {
+		snapshot, decodeErr := service.DecodeMCPCanvasSnapshot(json.RawMessage(project.Payload))
+		if decodeErr != nil {
 			fail(c, 422, service.NewAppError(422, "画布快照无效"))
 			return
 		}
-		ok(c, gin.H{"project": snapshot, "revision": project.Revision, "stateHash": project.StateHash, "hashSource": "server"})
+		ok(c, gin.H{"project": service.SanitizeMCPOutput(snapshot), "revision": project.Revision, "stateHash": project.StateHash, "hashSource": "server"})
 	})
 	r.POST("/mcp/projects/:id/tools/validate", func(c *gin.Context) {
 		principal, err := RequireMCPToken(c, svc, "canvas:write")
