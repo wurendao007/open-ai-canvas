@@ -114,6 +114,7 @@ func run(ctx context.Context) error {
 	handler.RegisterOAuthCallbackRoutes(r, svc)
 	handler.RegisterAuthRoutes(api, svc)
 	handler.RegisterMCPAuthRoutes(api, svc)
+	handler.RegisterMCPCanvasRoutes(api, svc)
 	handler.RegisterAppearanceRoutes(api, svc)
 	handler.RegisterFeatureAvailabilityRoutes(api, svc)
 	handler.RegisterResponseInterceptionRoutes(api, svc)
