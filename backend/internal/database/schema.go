@@ -3,6 +3,8 @@ package database
 import (
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -81,6 +83,8 @@ func Models() []any {
 		&model.WorkflowStepTask{},
 		&model.ProductionTaskLink{},
 		&model.CanvasProject{},
+		&model.MCPDeviceSession{},
+		&model.MCPToken{},
 		&model.CanvasShare{},
 		&model.PromptTemplate{},
 		&model.UserPromptCustomization{},
@@ -112,6 +116,9 @@ func migrateSchemaV1(db *gorm.DB) error {
 		return err
 	}
 	if err := db.AutoMigrate(Models()...); err != nil {
+		return err
+	}
+	if err := backfillCanvasStateHashes(db); err != nil {
 		return err
 	}
 	if err := backfillProjectUnitWordCounts(db); err != nil {
@@ -150,6 +157,70 @@ func migrateSchemaV1(db *gorm.DB) error {
 		return err
 	}
 	return db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_nonempty ON users(lower(email)) WHERE email <> ''").Error
+}
+
+var canvasHashTemporaryFields = map[string]struct{}{
+	"clientId":   {},
+	"revision":   {},
+	"stateHash":  {},
+	"state_hash": {},
+}
+
+func backfillCanvasStateHashes(db *gorm.DB) error {
+	var projects []model.CanvasProject
+	if err := db.Select("id", "payload_json", "revision", "state_hash").Where("state_hash = '' OR state_hash IS NULL").Find(&projects).Error; err != nil {
+		return fmt.Errorf("读取待回填画布状态摘要：%w", err)
+	}
+	for _, project := range projects {
+		normalized, err := normalizeCanvasPayloadForMigration([]byte(project.PayloadJSON))
+		if err != nil {
+			return fmt.Errorf("回填画布 %s 状态摘要：%w", project.ID, err)
+		}
+		digest := sha256.Sum256(normalized)
+		hash := base64.RawURLEncoding.EncodeToString(digest[:])
+		if err := db.Model(&model.CanvasProject{}).Where("id = ?", project.ID).Update("state_hash", hash).Error; err != nil {
+			return fmt.Errorf("保存画布 %s 状态摘要：%w", project.ID, err)
+		}
+	}
+	return nil
+}
+
+func normalizeCanvasPayloadForMigration(raw []byte) ([]byte, error) {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, fmt.Errorf("画布数据不是有效 JSON：%w", err)
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, errors.New("画布数据必须是 JSON 对象")
+	}
+	if containsInlineCanvasMediaForMigration(object) {
+		return nil, errors.New("画布数据包含内嵌媒体")
+	}
+	for key := range canvasHashTemporaryFields {
+		delete(object, key)
+	}
+	return json.Marshal(object)
+}
+
+func containsInlineCanvasMediaForMigration(value any) bool {
+	switch item := value.(type) {
+	case string:
+		return strings.HasPrefix(strings.ToLower(strings.TrimSpace(item)), "data:")
+	case []any:
+		for _, child := range item {
+			if containsInlineCanvasMediaForMigration(child) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, child := range item {
+			if containsInlineCanvasMediaForMigration(child) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func backfillProjectUnitWordCounts(db *gorm.DB) error {
