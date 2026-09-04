@@ -4,7 +4,10 @@ import localforage from "localforage";
 import { apiClient } from "../src/services/api/request";
 import { getActiveUserScope, setActiveUserScope } from "../src/lib/user-scope";
 import { flushCanvasStorePersistence, useCanvasStore, type CanvasProject } from "../src/stores/canvas/use-canvas-store";
-import { remoteCanvasVersionKey, resetRemoteUserDataSync, saveRemoteUserDataNow, scheduleRemoteUserDataSync, syncRemoteUserData } from "../src/services/user-data-sync";
+import { REMOTE_CANVAS_CONFLICT_MESSAGE, remoteCanvasVersionKey, resetRemoteUserDataSync, saveRemoteUserDataNow, scheduleRemoteUserDataSync, syncRemoteUserData } from "../src/services/user-data-sync";
+import { useAssetStore, type Asset } from "../src/stores/use-asset-store";
+import { useSyncProgressStore } from "../src/stores/use-sync-progress-store";
+import { CanvasNodeType, type CanvasNodeData } from "../src/types/canvas";
 
 function project(id: string, title: string): CanvasProject {
     return {
@@ -90,6 +93,16 @@ function installRemoteAdapter(options: { project: CanvasProject; revision: numbe
                 config,
             };
         }
+        if (method === "put" && url.startsWith("/assets/")) {
+            const asset = body?.asset as Asset | undefined;
+            return {
+                data: { code: 0, data: { asset: { id: asset?.id, title: asset?.title, createdAt: asset?.createdAt, updatedAt: asset?.updatedAt } }, msg: "" },
+                status: 200,
+                statusText: "OK",
+                headers: {},
+                config,
+            };
+        }
         throw new Error(`unexpected request: ${method} ${url}`);
     };
     return { requests, restore: () => { apiClient.defaults.adapter = previousAdapter; } };
@@ -136,6 +149,7 @@ test("remote canvas saves use server revision/hash and acknowledge the next vers
 test("a remote canvas conflict preserves local state and does not retry from a stale version", async () => {
     const restoreStorage = installBrowserStorage();
     const previousProjects = useCanvasStore.getState().projects;
+    const previousAssets = useAssetStore.getState().assets;
     const originalScope = getActiveUserScope();
     const remote = project("canvas-remote-conflict", "远端初稿");
     const adapter = installRemoteAdapter({ project: remote, revision: 7, stateHash: "server-hash-7", conflict: true });
@@ -151,9 +165,61 @@ test("a remote canvas conflict preserves local state and does not retry from a s
         expect(writes).toHaveLength(1);
         expect(writes[0]?.body).toMatchObject({ expectedRevision: 7, expectedStateHash: "server-hash-7" });
         expect(useCanvasStore.getState().projects[0]?.title).toBe("必须保留的本地编辑");
+        expect(useSyncProgressStore.getState().syncingProjects[remote.id]).toMatchObject({
+            phase: "error",
+            message: REMOTE_CANVAS_CONFLICT_MESSAGE,
+        });
+
+        await saveRemoteUserDataNow();
+        expect(adapter.requests.filter((request) => request.method === "put" && request.url.startsWith("/canvas-projects/"))).toHaveLength(1);
     } finally {
         resetRemoteUserDataSync();
         useCanvasStore.setState({ projects: previousProjects });
+        useAssetStore.setState({ assets: previousAssets });
+        useSyncProgressStore.getState().clearAll();
+        await flushCanvasStorePersistence();
+        setActiveUserScope(originalScope);
+        adapter.restore();
+        restoreStorage();
+    }
+});
+
+test("remote hydrate acknowledges the pre-repair canvas so repaired asset ids remain dirty", async () => {
+    const restoreStorage = installBrowserStorage();
+    const previousProjects = useCanvasStore.getState().projects;
+    const previousAssets = useAssetStore.getState().assets;
+    const originalScope = getActiveUserScope();
+    const imageNode: CanvasNodeData = {
+        id: "node-1",
+        type: CanvasNodeType.Image,
+        title: "远端图片",
+        position: { x: 0, y: 0 },
+        width: 100,
+        height: 100,
+        metadata: {
+            content: "https://cdn.example/image.png",
+            mimeType: "image/png",
+            bytes: 10,
+        },
+    };
+    const remote = { ...project("canvas-repair-baseline", "远端待修复"), nodes: [imageNode] };
+    const adapter = installRemoteAdapter({ project: remote, revision: 0, stateHash: "server-hash-0" });
+    try {
+        resetRemoteUserDataSync();
+        setActiveUserScope("account-repair-baseline");
+        await syncRemoteUserData("account-repair-baseline");
+
+        const canvasWrites = adapter.requests.filter((request) => request.method === "put" && request.url.startsWith("/canvas-projects/"));
+        expect(canvasWrites).toHaveLength(1);
+        expect(canvasWrites[0]?.body).toMatchObject({ expectedRevision: 0, expectedStateHash: "server-hash-0" });
+        const savedProject = canvasWrites[0]?.body?.project as CanvasProject | undefined;
+        expect(savedProject?.nodes[0]?.metadata?.assetId).toBeString();
+        expect(useAssetStore.getState().assets).toHaveLength(1);
+    } finally {
+        resetRemoteUserDataSync();
+        useCanvasStore.setState({ projects: previousProjects });
+        useAssetStore.setState({ assets: previousAssets });
+        useSyncProgressStore.getState().clearAll();
         await flushCanvasStorePersistence();
         setActiveUserScope(originalScope);
         adapter.restore();
@@ -167,4 +233,7 @@ test("remote canvas version keys include user scope and conflict copy", async ()
     expect(source).toContain("remoteCanvasVersionKey(activeRemoteUserId, project.id)");
     expect(source).toContain("画布已被其他窗口或 MCP 修改，请重新加载/合并");
     expect(source).toContain("remoteCanvasVersions.clear()");
+    const cardSource = await Bun.file(new URL("../src/components/canvas/canvas-project-card.tsx", import.meta.url)).text();
+    expect(cardSource).toContain("云端同步冲突");
+    expect(cardSource).toContain("syncError.message");
 });

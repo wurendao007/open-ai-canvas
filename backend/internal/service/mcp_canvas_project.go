@@ -42,6 +42,12 @@ func (s *Service) SaveCanvasProjectWithPrecondition(userID string, raw json.RawM
 	if err != nil {
 		return nil, err
 	}
+	policy, err := s.RuntimePolicy()
+	if err != nil {
+		return nil, err
+	}
+	s.storageMu.Lock()
+	defer s.storageMu.Unlock()
 	if err := s.validateCanvasMediaAssets(userID, raw); err != nil {
 		return nil, err
 	}
@@ -50,13 +56,24 @@ func (s *Service) SaveCanvasProjectWithPrecondition(userID string, raw json.RawM
 		return nil, existingErr
 	}
 	if existing == nil {
+		if precondition != nil {
+			return nil, NewAppError(http.StatusConflict, "画布已被其他窗口或 MCP 删除，请重新加载后再试")
+		}
 		project.StateHash, err = model.CanvasStateHash(raw)
 		if err != nil {
 			return nil, BadAuthRequest(err.Error())
 		}
+		usage, err := s.repo.UserStorageUsage(userID)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateStructuredStorageQuotaWithPolicy(usage, "canvas", true, int64(len(raw)), policy.Resource); err != nil {
+			return nil, err
+		}
 		if err := s.repo.UpsertCanvasProject(&project); err != nil {
 			return nil, err
 		}
+		s.recordActivity(userID, "canvas", 1)
 		return canvasMCPProjectFromModel(&project), nil
 	}
 	if precondition == nil {
@@ -71,12 +88,23 @@ func (s *Service) SaveCanvasProjectWithPrecondition(userID string, raw json.RawM
 	if err != nil {
 		return nil, BadAuthRequest(err.Error())
 	}
+	usage, err := s.repo.UserStorageUsage(userID)
+	if err != nil {
+		return nil, err
+	}
+	existingBytes := int64(len([]byte(existing.PayloadJSON)))
+	if err := validateStructuredStorageQuotaWithPolicy(usage, "canvas", false, int64(len(raw))-existingBytes, policy.Resource); err != nil {
+		return nil, err
+	}
 	updated, err := s.repo.UpdateCanvasProjectIfPrecondition(&project, precondition.Revision, precondition.StateHash)
 	if err != nil {
 		return nil, err
 	}
 	if !updated {
 		return nil, NewAppError(http.StatusConflict, "画布已被其他窗口或 MCP 修改，请重新加载/合并")
+	}
+	if existing.PayloadJSON != project.PayloadJSON || existing.Title != project.Title || existing.ProjectID != project.ProjectID {
+		s.recordActivity(userID, "canvas", 1)
 	}
 	return canvasMCPProjectFromModel(&project), nil
 }

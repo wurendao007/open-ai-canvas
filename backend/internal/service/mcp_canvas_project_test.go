@@ -4,22 +4,35 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"infinite-canvas/backend/internal/database"
 	"infinite-canvas/backend/internal/model"
 	"infinite-canvas/backend/internal/repository"
+
+	"gorm.io/gorm"
 )
 
-func TestSaveCanvasProjectWithPreconditionIncrementsVersion(t *testing.T) {
-	db, err := database.Open(database.Config{Driver: "sqlite", DSN: "file:mcp-canvas-project-" + t.Name() + "?mode=memory&cache=shared"})
+func newMCPProjectTestService(t *testing.T, name string) (*Service, *repository.Repository, *gorm.DB) {
+	t.Helper()
+	db, err := database.Open(database.Config{Driver: "sqlite", DSN: "file:mcp-canvas-" + name + "-" + t.Name() + "?mode=memory&cache=shared"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.CanvasProject{}); err != nil {
+	if err := db.AutoMigrate(&model.SystemSetting{}, &model.Asset{}, &model.CanvasProject{}, &model.CanvasShare{}, &model.CanvasUnitLink{}, &model.Session{}, &model.Message{}, &model.Task{}, &model.TaskLog{}, &model.Result{}, &model.ApiCallLog{}, &model.TaskTextDelta{}, &model.UserDailyActivity{}); err != nil {
 		t.Fatal(err)
 	}
-	svc := New(repository.New(db), t.TempDir())
+	repo := repository.New(db)
+	return New(repo, t.TempDir()), repo, db
+}
+
+func paddedCanvasPayload(id string, title string, pad int) json.RawMessage {
+	return json.RawMessage(`{"id":"` + id + `","title":"` + title + `","nodes":[],"connections":[],"pad":"` + strings.Repeat("x", pad) + `"}`)
+}
+
+func TestSaveCanvasProjectWithPreconditionIncrementsVersion(t *testing.T) {
+	svc, _, _ := newMCPProjectTestService(t, "project")
 	raw := json.RawMessage(`{"id":"canvas-1","title":"初稿","nodes":[],"connections":[]}`)
 	first, err := svc.SaveCanvasProjectWithPrecondition("user-1", raw, nil)
 	if err != nil {
@@ -50,22 +63,14 @@ func TestSaveCanvasProjectWithPreconditionIncrementsVersion(t *testing.T) {
 }
 
 func TestListMCPProjectsReturnsServerVersionMetadata(t *testing.T) {
-	db, err := database.Open(database.Config{Driver: "sqlite", DSN: "file:mcp-canvas-list-" + t.Name() + "?mode=memory&cache=shared"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.AutoMigrate(&model.CanvasProject{}); err != nil {
-		t.Fatal(err)
-	}
-	r := repository.New(db)
+	svc, r, _ := newMCPProjectTestService(t, "list")
 	stateHash, err := model.CanvasStateHash([]byte(`{"id":"canvas-1","title":"列表","nodes":[],"connections":[]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&model.CanvasProject{ID: "canvas-1", UserID: "user-1", ProjectID: "project-1", Title: "列表", PayloadJSON: `{"id":"canvas-1","title":"列表","nodes":[],"connections":[]}`, Revision: 4, StateHash: stateHash}).Error; err != nil {
+	if err := r.Create(&model.CanvasProject{ID: "canvas-1", UserID: "user-1", ProjectID: "project-1", Title: "列表", PayloadJSON: `{"id":"canvas-1","title":"列表","nodes":[],"connections":[]}`, Revision: 4, StateHash: stateHash}); err != nil {
 		t.Fatal(err)
 	}
-	svc := New(r, t.TempDir())
 	projects, err := svc.ListMCPProjects("user-1")
 	if err != nil {
 		t.Fatal(err)
@@ -76,14 +81,7 @@ func TestListMCPProjectsReturnsServerVersionMetadata(t *testing.T) {
 }
 
 func TestSaveCanvasProjectRejectsStaleHashWithoutChangingStoredProject(t *testing.T) {
-	db, err := database.Open(database.Config{Driver: "sqlite", DSN: "file:mcp-canvas-hash-" + t.Name() + "?mode=memory&cache=shared"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.AutoMigrate(&model.CanvasProject{}); err != nil {
-		t.Fatal(err)
-	}
-	svc := New(repository.New(db), t.TempDir())
+	svc, _, _ := newMCPProjectTestService(t, "hash")
 	base := json.RawMessage(`{"id":"canvas-1","title":"初稿","nodes":[],"connections":[]}`)
 	first, err := svc.SaveCanvasProjectWithPrecondition("user-1", base, nil)
 	if err != nil {
@@ -103,14 +101,7 @@ func TestSaveCanvasProjectRejectsStaleHashWithoutChangingStoredProject(t *testin
 }
 
 func TestSaveCanvasProjectPreconditionIsUserScoped(t *testing.T) {
-	db, err := database.Open(database.Config{Driver: "sqlite", DSN: "file:mcp-canvas-scope-" + t.Name() + "?mode=memory&cache=shared"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.AutoMigrate(&model.CanvasProject{}); err != nil {
-		t.Fatal(err)
-	}
-	svc := New(repository.New(db), t.TempDir())
+	svc, _, _ := newMCPProjectTestService(t, "scope")
 	raw := json.RawMessage(`{"id":"canvas-1","title":"初稿","nodes":[],"connections":[]}`)
 	first, err := svc.SaveCanvasProjectWithPrecondition("user-1", raw, nil)
 	if err != nil {
@@ -123,7 +114,80 @@ func TestSaveCanvasProjectPreconditionIsUserScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	other := json.RawMessage(`{"id":"canvas-2","title":"其他用户","nodes":[],"connections":[]}`)
-	if _, err := svc.SaveCanvasProjectWithPrecondition("user-2", other, &CanvasMCPPrecondition{Revision: first.Revision, StateHash: first.StateHash}); err != nil {
+	if _, err := svc.SaveCanvasProjectWithPrecondition("user-2", other, &CanvasMCPPrecondition{Revision: first.Revision, StateHash: first.StateHash}); err == nil {
+		t.Fatal("expected scoped stale precondition to fail for missing user-2 row")
+	}
+	if _, err := svc.SaveCanvasProjectWithPrecondition("user-2", other, nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSaveCanvasProjectWithPreconditionMissingRowDoesNotRecreate(t *testing.T) {
+	svc, repo, _ := newMCPProjectTestService(t, "missing")
+	raw := json.RawMessage(`{"id":"canvas-1","title":"初稿","nodes":[],"connections":[]}`)
+	first, err := svc.SaveCanvasProjectWithPrecondition("user-1", raw, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.DeleteCanvasProject("user-1", "canvas-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SaveCanvasProjectWithPrecondition("user-1", raw, &CanvasMCPPrecondition{Revision: first.Revision, StateHash: first.StateHash}); err == nil {
+		t.Fatal("expected missing row conflict")
+	} else {
+		var appErr *AppError
+		if !errors.As(err, &appErr) || appErr.Status != http.StatusConflict {
+			t.Fatalf("missing row error = %v", err)
+		}
+	}
+	if _, err := svc.GetMCPProject("user-1", "canvas-1"); err == nil {
+		t.Fatal("stale precondition recreated deleted canvas")
+	}
+}
+
+func TestSaveCanvasProjectWithPreconditionChecksQuotaAndRecordsActivity(t *testing.T) {
+	svc, repo, db := newMCPProjectTestService(t, "quota")
+	policy := defaultRuntimePolicy()
+	policy.Resource.StructuredDataMB = 1
+	rawPolicy, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Create(&model.SystemSetting{Key: runtimePolicySettingKey, ValueJSON: string(rawPolicy)}); err != nil {
+		t.Fatal(err)
+	}
+	base := paddedCanvasPayload("canvas-1", "初稿", 512*1024)
+	first, err := svc.SaveCanvasProjectWithPrecondition("user-1", base, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var activity model.UserDailyActivity
+	if err := db.First(&activity, "user_id = ?", "user-1").Error; err != nil || !activity.CanvasActive {
+		t.Fatalf("activity = %#v err=%v", activity, err)
+	}
+	oversized := paddedCanvasPayload("canvas-1", "超额", 1100*1024)
+	if _, err := svc.SaveCanvasProjectWithPrecondition("user-1", oversized, &CanvasMCPPrecondition{Revision: first.Revision, StateHash: first.StateHash}); err == nil {
+		t.Fatal("expected quota error")
+	}
+	stored, err := svc.GetMCPProject("user-1", "canvas-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Revision != first.Revision || string(stored.Payload) != string(base) {
+		t.Fatalf("stored after quota rejection = %#v", stored)
+	}
+}
+
+func TestCanvasProjectSummarySerializesRevisionZeroAndStateHash(t *testing.T) {
+	raw, err := json.Marshal(UserDataSummary{ID: "canvas-1", Title: "初稿", StateHash: "hash-r0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(raw)
+	if !strings.Contains(body, `"revision":0`) {
+		t.Fatalf("revision zero omitted: %s", body)
+	}
+	if !strings.Contains(body, `"stateHash":"hash-r0"`) {
+		t.Fatalf("state hash omitted: %s", body)
 	}
 }

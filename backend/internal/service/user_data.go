@@ -29,8 +29,8 @@ type UserDataSummary struct {
 	Title      string    `json:"title"`
 	CreatedAt  time.Time `json:"createdAt"`
 	UpdatedAt  time.Time `json:"updatedAt"`
-	Revision   int64     `json:"revision,omitempty"`
-	StateHash  string    `json:"stateHash,omitempty"`
+	Revision   int64     `json:"revision"`
+	StateHash  string    `json:"stateHash"`
 	HashSource string    `json:"hashSource,omitempty"`
 }
 

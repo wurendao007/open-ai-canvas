@@ -145,6 +145,7 @@ export function CanvasProjectCard({ project, projectName, variant = "library", r
 export function ProjectPreview({ project, preferLatestImage = false }: { project: CanvasProject; preferLatestImage?: boolean }) {
     const syncProgress = useSyncProgressStore((state) => state.syncingProjects[project.id]);
     const isSyncing = Boolean(syncProgress && (syncProgress.phase === "uploading" || syncProgress.phase === "saving"));
+    const syncError = syncProgress?.phase === "error" ? syncProgress : null;
     const media = projectPreviewMedia(project.nodes, preferLatestImage);
 
     const content = media ? (
@@ -180,14 +181,16 @@ export function ProjectPreview({ project, preferLatestImage = false }: { project
     return (
         <div className="relative size-full overflow-hidden">
             {content}
-            {isSyncing && syncProgress ? (
+            {(isSyncing && syncProgress) || syncError ? (
                 <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-stone-950/75 p-3 text-center backdrop-blur-sm transition-all duration-300 pointer-events-none select-none" onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center gap-1.5 text-amber-400">
-                        <CloudUpload className="size-4 animate-bounce" />
-                        <span className="text-xs font-medium tracking-wide">云端同步中</span>
+                        {syncError ? <X className="size-4" /> : <CloudUpload className="size-4 animate-bounce" />}
+                        <span className="text-xs font-medium tracking-wide">{syncError ? "云端同步冲突" : "云端同步中"}</span>
                     </div>
                     <div className="w-full max-w-[150px] space-y-1">
-                        {syncProgress.total > 0 ? (
+                        {syncError ? (
+                            <div className="text-[10px] leading-relaxed text-white/80">{syncError.message}</div>
+                        ) : syncProgress.total > 0 ? (
                             <>
                                 <div className="flex items-center justify-between text-[10px] text-white/80">
                                     <span>媒体上传</span>
@@ -207,7 +210,7 @@ export function ProjectPreview({ project, preferLatestImage = false }: { project
                         ) : (
                             <div className="text-[10px] text-white/80">正在写入云端结构...</div>
                         )}
-                        <div className="text-[9px] text-white/60">请勿关闭或刷新浏览器</div>
+                        <div className="text-[9px] text-white/60">{syncError ? "请重新加载或手动合并后再同步" : "请勿关闭或刷新浏览器"}</div>
                     </div>
                 </div>
             ) : null}

@@ -627,6 +627,12 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 					})
 					return
 				}
+				code := appErr.Code
+				if code == 0 {
+					code = appErr.Status
+				}
+				c.JSON(appErr.Status, gin.H{"code": code, "data": nil, "msg": appErr.Message})
+				return
 			}
 			failService(c, err)
 			return

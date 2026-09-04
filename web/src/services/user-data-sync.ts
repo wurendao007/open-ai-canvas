@@ -24,6 +24,7 @@ let subscriptionsInstalled = false;
 let acknowledgedAssets = new Map<string, Asset>();
 let acknowledgedProjects = new Map<string, CanvasProject>();
 let remoteCanvasVersions = new Map<string, RemoteCanvasVersion>();
+let remoteCanvasConflictKeys = new Set<string>();
 
 export function remoteCanvasVersionKey(scope: string, canvasId: string) {
     return `${scope}\0${canvasId}`;
@@ -38,6 +39,7 @@ export async function syncRemoteUserData(userId?: string | null) {
         activeRemoteUserId = userId || "";
         acknowledgedProjects.clear();
         remoteCanvasVersions.clear();
+        remoteCanvasConflictKeys.clear();
         acknowledgedAssets.clear();
         if (!activeRemoteUserId) {
             remoteUserDataPhase = "inactive";
@@ -52,10 +54,11 @@ export async function syncRemoteUserData(userId?: string | null) {
             // 这里只替换结构化记录，不在登录阶段解析图片/视频/音频 URL；媒体由实际使用方按需解析。
             useCanvasStore.getState().replaceProjects(snapshot.projects);
             useAssetStore.getState().replaceAssets(snapshot.assets);
+            const acknowledgedProjectBaseline = new Map(useCanvasStore.getState().projects.map((project) => [project.id, project]));
             const repair = repairMissingCanvasAssets();
             repairedCanvasAssets = repair.createdAssets > 0 || repair.updatedProjects > 0;
             await Promise.all([flushCanvasStorePersistence(), flushAssetStorePersistence()]);
-            acknowledgedProjects = new Map(useCanvasStore.getState().projects.map((project) => [project.id, project]));
+            acknowledgedProjects = acknowledgedProjectBaseline;
             remoteCanvasVersions = new Map((snapshot.projectVersions ?? []).filter((project) => project.stateHash != null).map((project) => [remoteCanvasVersionKey(activeRemoteUserId, project.id), { revision: project.revision ?? 0, stateHash: project.stateHash! }]));
             acknowledgedAssets = new Map(snapshot.assets.map((asset) => [asset.id, asset]));
             remoteUserDataPhase = "ready";
@@ -84,6 +87,7 @@ export function resetRemoteUserDataSync() {
     acknowledgedAssets.clear();
     acknowledgedProjects.clear();
     remoteCanvasVersions.clear();
+    remoteCanvasConflictKeys.clear();
     if (syncTimer) {
         window.clearTimeout(syncTimer);
         syncTimer = null;
@@ -344,7 +348,7 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>) {
     repairMissingCanvasAssets();
     const currentProjects = useCanvasStore.getState().projects;
     const currentAssets = useAssetStore.getState().assets;
-    const dirtyProjects = currentProjects.filter((project) => !sameEntitySnapshot(acknowledgedProjects.get(project.id), project));
+    const dirtyProjects = currentProjects.filter((project) => !remoteCanvasConflictKeys.has(remoteCanvasVersionKey(activeRemoteUserId, project.id)) && !sameEntitySnapshot(acknowledgedProjects.get(project.id), project));
     const dirtyAssets = currentAssets.filter((asset) => !sameEntitySnapshot(acknowledgedAssets.get(asset.id), asset));
     const currentProjectIds = new Set(currentProjects.map((project) => project.id));
     const currentAssetIds = new Set(currentAssets.map((asset) => asset.id));
@@ -391,10 +395,19 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>) {
             if (typeof response.project.revision === "number" && typeof response.project.stateHash === "string") {
                 remoteCanvasVersions.set(versionKey, { revision: response.project.revision, stateHash: response.project.stateHash });
             }
+            remoteCanvasConflictKeys.delete(versionKey);
             acknowledgedProjects.set(source.id, source);
             if (total > 0) useSyncProgressStore.getState().setProjectProgress(source.id, null);
         } catch (error) {
-            if (total > 0) {
+            if (error instanceof ApiError && error.status === 409) {
+                remoteCanvasConflictKeys.add(remoteCanvasVersionKey(activeRemoteUserId, source.id));
+                useSyncProgressStore.getState().setProjectProgress(source.id, {
+                    phase: "error",
+                    total,
+                    completed: 0,
+                    message: REMOTE_CANVAS_CONFLICT_MESSAGE,
+                });
+            } else if (total > 0) {
                 useSyncProgressStore.getState().setProjectProgress(source.id, {
                     phase: "error",
                     message: error instanceof Error ? error.message : "云端同步失败，等待重试",
@@ -407,6 +420,7 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>) {
         await deleteRemoteCanvasProject(id);
         acknowledgedProjects.delete(id);
         remoteCanvasVersions.delete(remoteCanvasVersionKey(activeRemoteUserId, id));
+        remoteCanvasConflictKeys.delete(remoteCanvasVersionKey(activeRemoteUserId, id));
     }
     for (const id of deletedAssetIds) {
         await deleteRemoteAsset(id);
