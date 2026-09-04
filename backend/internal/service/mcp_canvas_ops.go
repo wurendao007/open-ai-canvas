@@ -316,6 +316,9 @@ func ValidateMCPCanvasOps(snapshot MCPCanvasSnapshot, ops []MCPCanvasOp) MCPOpsV
 		}
 	}
 	for i, op := range ops {
+		if containsInlineMCPMedia(op.Metadata) || containsInlineMCPMedia(op.Patch) {
+			issue(i, "操作参数不能包含内嵌媒体")
+		}
 		switch op.Type {
 		case "add_node":
 			id := mcpOpNodeID(op, i)
@@ -338,7 +341,7 @@ func ValidateMCPCanvasOps(snapshot MCPCanvasSnapshot, ops []MCPCanvasOp) MCPOpsV
 			validateMCPNodePatchTypes(issue, i, op.Patch)
 			validateMCPNodeNumbers(issue, i, op.Position, nil, nil, numberFromPatch(op.Patch, "width"), numberFromPatch(op.Patch, "height"))
 			node := nodes[op.ID]
-			if mcpIsMediaType(node.Type) && (hasMCPStatus(op.Metadata) || hasMCPStatusMap(op.Patch)) {
+			if mcpIsMediaType(node.Type) && (hasMCPStatus(op.Metadata) || hasMCPStatusMap(op.Patch) || hasMCPStatus(op.Patch)) {
 				issue(i, "不能直接修改媒体节点 status")
 			}
 		case "delete_node":
@@ -432,6 +435,9 @@ func ValidateMCPCanvasOps(snapshot MCPCanvasSnapshot, ops []MCPCanvasOp) MCPOpsV
 			}
 		case "run_generation":
 			requireNode(i, op.NodeID, "生成目标")
+			if strings.TrimSpace(op.ID) == "" {
+				issue(i, "生成操作必须提供幂等标识")
+			}
 			node := nodes[op.NodeID]
 			mode := strings.TrimSpace(op.Mode)
 			if mode == "" {

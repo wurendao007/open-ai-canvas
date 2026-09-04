@@ -185,6 +185,9 @@ func (s *Service) ApplyMCPCanvasOps(userID, canvasID string, req MCPToolRequest)
 	if err != nil {
 		return nil, NewAppError(422, err.Error())
 	}
+	// The service-side revision/hash is authoritative even when the decoded
+	// snapshot applied default values for omitted optional fields.
+	verification.BeforeHash = project.StateHash
 	payload, _ := json.Marshal(after)
 	hash, err := model.CanvasStateHash(payload)
 	if err != nil {
@@ -276,6 +279,9 @@ func (s *Service) SubmitMCPGeneration(userID, canvasID string, req MCPGeneration
 	if identity == "" {
 		identity = strings.TrimSpace(req.ClientOperationID)
 	}
+	if identity == "" {
+		return nil, NewAppError(http.StatusUnprocessableEntity, "生成请求必须提供幂等标识")
+	}
 	if identity != "" {
 		mcpGenerationMu.Lock()
 		defer mcpGenerationMu.Unlock()
@@ -290,7 +296,11 @@ func (s *Service) SubmitMCPGeneration(userID, canvasID string, req MCPGeneration
 	if req.Config != nil {
 		input["config"] = req.Config
 	}
-	task, err := s.CreateTask(userID, CreateTaskRequest{ProjectID: canvasID, Type: "canvas_" + mode, Operation: mode, Prompt: req.Prompt, Input: input, RequestID: identity})
+	taskRequestID := strings.TrimSpace(req.RequestID)
+	if taskRequestID == "" {
+		taskRequestID = identity
+	}
+	task, err := s.CreateTask(userID, CreateTaskRequest{ProjectID: canvasID, Type: "canvas_" + mode, Operation: mode, Prompt: req.Prompt, Input: input, RequestID: taskRequestID})
 	if err != nil {
 		return nil, err
 	}
