@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -563,12 +564,12 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
-		project, err := svc.UserCanvasProject(user.ID, c.Param("id"))
+		project, err := svc.GetMCPProject(user.ID, c.Param("id"))
 		if err != nil {
-			fail(c, http.StatusNotFound, err)
+			failService(c, err)
 			return
 		}
-		ok(c, gin.H{"project": project})
+		ok(c, gin.H{"project": project.Payload, "revision": project.Revision, "stateHash": project.StateHash, "hashSource": project.HashSource})
 	})
 	r.PUT("/canvas-projects/:id", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
@@ -582,7 +583,9 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 5<<20)
 		var req struct {
-			Project json.RawMessage `json:"project"`
+			Project           json.RawMessage `json:"project"`
+			ExpectedRevision  *int64          `json:"expectedRevision"`
+			ExpectedStateHash string          `json:"expectedStateHash"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			fail(c, http.StatusBadRequest, err)
@@ -595,8 +598,36 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 			fail(c, http.StatusBadRequest, service.BadAuthRequest("画布 ID 与请求路径不一致"))
 			return
 		}
-		project, err := svc.UpsertUserCanvasProject(user.ID, req.Project)
+		var project service.UserDataSummary
+		if req.ExpectedRevision != nil || strings.TrimSpace(req.ExpectedStateHash) != "" {
+			if req.ExpectedRevision == nil || strings.TrimSpace(req.ExpectedStateHash) == "" {
+				fail(c, http.StatusPreconditionRequired, service.BadAuthRequest("expectedRevision 和 expectedStateHash 必须同时提供"))
+				return
+			}
+			versioned, saveErr := svc.SaveCanvasProjectWithPrecondition(user.ID, req.Project, &service.CanvasMCPPrecondition{Revision: *req.ExpectedRevision, StateHash: req.ExpectedStateHash})
+			err = saveErr
+			if versioned != nil {
+				project = service.UserDataSummary{ID: versioned.ID, Title: versioned.Title, CreatedAt: versioned.CreatedAt, UpdatedAt: versioned.UpdatedAt, Revision: versioned.Revision, StateHash: versioned.StateHash, HashSource: versioned.HashSource}
+			}
+		} else {
+			project, err = svc.UpsertUserCanvasProject(user.ID, req.Project)
+		}
 		if err != nil {
+			var appErr *service.AppError
+			if errors.As(err, &appErr) && appErr.Status == http.StatusConflict {
+				if current, currentErr := svc.GetMCPProject(user.ID, c.Param("id")); currentErr == nil {
+					code := appErr.Code
+					if code == 0 {
+						code = appErr.Status
+					}
+					c.JSON(appErr.Status, gin.H{
+						"code": code,
+						"data": gin.H{"revision": current.Revision, "stateHash": current.StateHash, "hashSource": current.HashSource},
+						"msg":  appErr.Message,
+					})
+					return
+				}
+			}
 			failService(c, err)
 			return
 		}

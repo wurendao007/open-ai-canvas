@@ -11,6 +11,9 @@ export type RemoteUserDataSummary = {
     title: string;
     createdAt: string;
     updatedAt: string;
+    revision?: number;
+    stateHash?: string;
+    hashSource?: "server";
 };
 
 export type AssetFolder = {
@@ -35,6 +38,14 @@ export type RemoteAssetPage = {
 export type RemoteUserDataSnapshot = {
     assets: Asset[];
     projects: CanvasProject[];
+    projectVersions?: RemoteUserDataSummary[];
+};
+
+export type RemoteCanvasProject = {
+    project: CanvasProject;
+    revision: number;
+    stateHash: string;
+    hashSource: "server";
 };
 
 export function getRemoteUserDataSnapshot() {
@@ -98,11 +109,21 @@ export function listRemoteCanvasProjects() {
 }
 
 export function getRemoteCanvasProject(id: string) {
-    return request<{ project: CanvasProject }>(api.get(`/canvas-projects/${encodeURIComponent(id)}`));
+    return request<RemoteCanvasProject>(api.get(`/canvas-projects/${encodeURIComponent(id)}`));
 }
 
 export function upsertRemoteCanvasProject(project: CanvasProject) {
     return request<{ project: RemoteUserDataSummary }>(api.put(`/canvas-projects/${encodeURIComponent(project.id)}`, { project }));
+}
+
+export type RemoteCanvasVersion = { revision: number; stateHash: string };
+
+export function upsertRemoteCanvasProjectWithVersion(project: CanvasProject, version?: RemoteCanvasVersion) {
+    return request<{ project: RemoteUserDataSummary }>(api.put(`/canvas-projects/${encodeURIComponent(project.id)}`, {
+        project,
+        expectedRevision: version?.revision,
+        expectedStateHash: version?.stateHash,
+    }));
 }
 
 export function deleteRemoteCanvasProject(id: string) {

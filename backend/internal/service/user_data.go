@@ -21,19 +21,23 @@ type CanvasProjectsSyncRequest struct {
 }
 
 type UserDataSummary struct {
-	ID        string    `json:"id"`
-	FolderID  string    `json:"folderId,omitempty"`
-	Kind      string    `json:"kind,omitempty"`
-	Category  string    `json:"category,omitempty"`
-	Status    string    `json:"status,omitempty"`
-	Title     string    `json:"title"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID         string    `json:"id"`
+	FolderID   string    `json:"folderId,omitempty"`
+	Kind       string    `json:"kind,omitempty"`
+	Category   string    `json:"category,omitempty"`
+	Status     string    `json:"status,omitempty"`
+	Title      string    `json:"title"`
+	CreatedAt  time.Time `json:"createdAt"`
+	UpdatedAt  time.Time `json:"updatedAt"`
+	Revision   int64     `json:"revision,omitempty"`
+	StateHash  string    `json:"stateHash,omitempty"`
+	HashSource string    `json:"hashSource,omitempty"`
 }
 
 type UserDataSnapshot struct {
-	Assets   []json.RawMessage `json:"assets"`
-	Projects []json.RawMessage `json:"projects"`
+	Assets          []json.RawMessage `json:"assets"`
+	Projects        []json.RawMessage `json:"projects"`
+	ProjectVersions []UserDataSummary `json:"projectVersions,omitempty"`
 }
 
 func (s *Service) UserDataSnapshot(userID string) (UserDataSnapshot, error) {
@@ -45,7 +49,11 @@ func (s *Service) UserDataSnapshot(userID string) (UserDataSnapshot, error) {
 	if err != nil {
 		return UserDataSnapshot{}, err
 	}
-	return UserDataSnapshot{Assets: assets, Projects: projects}, nil
+	versions, err := s.UserCanvasProjectSummaries(userID)
+	if err != nil {
+		return UserDataSnapshot{}, err
+	}
+	return UserDataSnapshot{Assets: assets, Projects: projects, ProjectVersions: versions}, nil
 }
 
 func (s *Service) UserAssetSummaries(userID string) ([]UserDataSummary, error) {
@@ -193,7 +201,7 @@ func (s *Service) UserCanvasProjectSummaries(userID string) ([]UserDataSummary, 
 	}
 	result := make([]UserDataSummary, 0, len(projects))
 	for _, project := range projects {
-		result = append(result, UserDataSummary{ID: project.ID, Title: project.Title, CreatedAt: project.CreatedAt, UpdatedAt: project.UpdatedAt})
+		result = append(result, UserDataSummary{ID: project.ID, Title: project.Title, CreatedAt: project.CreatedAt, UpdatedAt: project.UpdatedAt, Revision: project.Revision, StateHash: project.StateHash, HashSource: "server"})
 	}
 	return result, nil
 }
@@ -227,6 +235,15 @@ func (s *Service) UpsertUserCanvasProject(userID string, raw json.RawMessage) (U
 	existingBytes := int64(0)
 	if existing != nil {
 		existingBytes = int64(len([]byte(existing.PayloadJSON)))
+		project.CreatedAt = existing.CreatedAt
+		project.Revision = existing.Revision
+		if existing.PayloadJSON != project.PayloadJSON || existing.Title != project.Title || existing.ProjectID != project.ProjectID {
+			project.Revision++
+		}
+	}
+	project.StateHash, err = model.CanvasStateHash(raw)
+	if err != nil {
+		return UserDataSummary{}, BadAuthRequest(err.Error())
 	}
 	usage, err := s.repo.UserStorageUsage(userID)
 	if err != nil {
@@ -241,7 +258,7 @@ func (s *Service) UpsertUserCanvasProject(userID string, raw json.RawMessage) (U
 	if existingErr != nil || existing.PayloadJSON != project.PayloadJSON || existing.Title != project.Title {
 		s.recordActivity(userID, "canvas", 1)
 	}
-	return UserDataSummary{ID: project.ID, Title: project.Title, CreatedAt: project.CreatedAt, UpdatedAt: project.UpdatedAt}, nil
+	return UserDataSummary{ID: project.ID, Title: project.Title, CreatedAt: project.CreatedAt, UpdatedAt: project.UpdatedAt, Revision: project.Revision, StateHash: project.StateHash, HashSource: "server"}, nil
 }
 
 func (s *Service) DeleteUserCanvasProject(userID string, id string) error {
@@ -255,6 +272,10 @@ func (s *Service) ReplaceUserCanvasProjects(userID string, req CanvasProjectsSyn
 		item, err := canvasProjectFromJSON(userID, raw)
 		if err != nil {
 			return nil, err
+		}
+		item.StateHash, err = model.CanvasStateHash(raw)
+		if err != nil {
+			return nil, BadAuthRequest(err.Error())
 		}
 		projects = append(projects, item)
 		totalBytes += int64(len(raw))

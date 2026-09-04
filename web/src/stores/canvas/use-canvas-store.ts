@@ -31,6 +31,22 @@ export type CanvasProject = {
     timeline?: TimelineProject;
 };
 
+type CanvasProjectWithRemoteMetadata = CanvasProject & {
+    revision?: unknown;
+    stateHash?: unknown;
+    hashSource?: unknown;
+};
+
+// Server version metadata has its own sync map. Never persist it with the
+// browser canvas document, whose storageRevision is an IndexedDB merge fence.
+export function withoutRemoteCanvasVersion(project: CanvasProject): CanvasProject {
+    const sanitized = { ...project } as CanvasProjectWithRemoteMetadata;
+    delete sanitized.revision;
+    delete sanitized.stateHash;
+    delete sanitized.hashSource;
+    return sanitized;
+}
+
 type CanvasStore = {
     hydrated: boolean;
     projects: CanvasProject[];
@@ -380,6 +396,7 @@ const canvasStorage: PersistStorage<CanvasStore> = {
             return null;
         }
         const document = parseCanvasStorageDocument(value);
+        document.state.projects = document.state.projects.map(withoutRemoteCanvasVersion);
         const state = document.state as PersistedCanvasState;
         canvasMemoryStates.set(scope, state);
         recordCanvasStorageDocument(scope, document);
@@ -490,7 +507,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     const projects = state.projects.filter((project) => !ids.includes(project.id));
                     return { projects };
                 }),
-            replaceProjects: (projects) => set({ projects }),
+            replaceProjects: (projects) => set({ projects: projects.map(withoutRemoteCanvasVersion) }),
             updateProject: (id, patch) =>
                 set((state) => ({
                     projects: state.projects.map((project) => (project.id === id ? { ...project, ...patch, updatedAt: new Date().toISOString() } : project)),

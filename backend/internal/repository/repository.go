@@ -1149,7 +1149,7 @@ func (r *Repository) CanvasProjects(userID string) ([]model.CanvasProject, error
 
 func (r *Repository) CanvasProjectSummaries(userID string) ([]model.CanvasProject, error) {
 	var projects []model.CanvasProject
-	err := r.db.Select("id", "title", "created_at", "updated_at").Order("updated_at desc").Find(&projects, "user_id = ?", userID).Error
+	err := r.db.Select("id", "project_id", "title", "revision", "state_hash", "created_at", "updated_at").Order("updated_at desc").Find(&projects, "user_id = ?", userID).Error
 	return projects, err
 }
 
@@ -1164,11 +1164,28 @@ func (r *Repository) CanvasProjectForUser(userID string, id string) (*model.Canv
 func (r *Repository) UpsertCanvasProject(project *model.CanvasProject) error {
 	result := r.db.Model(&model.CanvasProject{}).
 		Where("id = ? AND user_id = ?", project.ID, project.UserID).
-		Updates(map[string]any{"project_id": project.ProjectID, "title": project.Title, "payload_json": project.PayloadJSON, "updated_at": project.UpdatedAt})
+		Updates(map[string]any{"project_id": project.ProjectID, "title": project.Title, "payload_json": project.PayloadJSON, "revision": project.Revision, "state_hash": project.StateHash, "updated_at": project.UpdatedAt})
 	if result.Error != nil || result.RowsAffected > 0 {
 		return result.Error
 	}
 	return r.db.Create(project).Error
+}
+
+// UpdateCanvasProjectIfPrecondition updates a project only when both version
+// fields still match the caller's snapshot. The caller owns the revision/hash
+// increment; a zero-row update is a conflict or missing project.
+func (r *Repository) UpdateCanvasProjectIfPrecondition(project *model.CanvasProject, expectedRevision int64, expectedHash string) (bool, error) {
+	result := r.db.Model(&model.CanvasProject{}).
+		Where("id = ? AND user_id = ? AND revision = ? AND state_hash = ?", project.ID, project.UserID, expectedRevision, expectedHash).
+		Updates(map[string]any{
+			"project_id":   project.ProjectID,
+			"title":        project.Title,
+			"payload_json": project.PayloadJSON,
+			"revision":     project.Revision,
+			"state_hash":   project.StateHash,
+			"updated_at":   project.UpdatedAt,
+		})
+	return result.RowsAffected == 1, result.Error
 }
 
 func (r *Repository) DeleteCanvasProject(userID string, id string) error {
