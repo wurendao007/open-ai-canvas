@@ -73,3 +73,46 @@ test("auto-run flow planning reuses its generation identity", () => {
     const secondRun = (second.input.ops as Array<Record<string, unknown>>).find((op) => op.type === "run_generation");
     assert.equal(firstRun?.id, secondRun?.id);
 });
+
+test("generation flow planning derives stable node and generation identities without embedding the prompt", () => {
+    const input = { prompt: "a forest with a hidden lake", title: "环境概念", mode: "image", x: 120, y: 80, referenceNodeIds: ["reference-1"], autoRun: true, model: "image-model" };
+    const state = { nodes: [{ id: "reference-1", type: "image" as const, position: { x: 0, y: 0 }, width: 100, height: 100 }], connections: [], revision: 3 };
+    const first = planTool("canvas_create_generation_flow", input, state);
+    const second = planTool("canvas_create_generation_flow", input, state);
+    const firstOps = first.input.ops as Array<Record<string, unknown>>;
+    const secondOps = second.input.ops as Array<Record<string, unknown>>;
+    const firstNodes = firstOps.filter((op) => op.type === "add_node");
+    const secondNodes = secondOps.filter((op) => op.type === "add_node");
+    assert.deepEqual(firstNodes.map((op) => op.id), secondNodes.map((op) => op.id));
+    assert.equal(firstNodes.some((op) => String(op.id).includes(input.prompt)), false);
+    assert.equal(firstOps.find((op) => op.type === "run_generation")?.id, secondOps.find((op) => op.type === "run_generation")?.id);
+});
+
+test("workflow planning derives stable node and generation identities and isolates distinct requests", () => {
+    const state = { nodes: [], connections: [], revision: 3 };
+    const input = { title: "角色工作流", nodes: [{ ref: "cards", kind: "character_cards", title: "角色卡", prompt: "角色外观" }], autoRun: true };
+    const first = planTool("canvas_create_workflow", input, state);
+    const second = planTool("canvas_create_workflow", input, state);
+    const different = planTool("canvas_create_workflow", { ...input, title: "另一套角色工作流" }, state);
+    const nodeIds = (planned: ReturnType<typeof planTool>) => (planned.input.ops as Array<Record<string, unknown>>).filter((op) => op.type === "add_node").map((op) => op.id);
+    const runId = (planned: ReturnType<typeof planTool>) => (planned.input.ops as Array<Record<string, unknown>>).find((op) => op.type === "run_generation")?.id;
+    assert.deepEqual(nodeIds(first), nodeIds(second));
+    assert.equal(runId(first), runId(second));
+    assert.notDeepEqual(nodeIds(first), nodeIds(different));
+    assert.notEqual(runId(first), runId(different));
+});
+
+test("planner rejects a stable high-level request when its derived node id already exists", () => {
+    const input = { prompt: "a forest", title: "环境", mode: "image" };
+    const emptyState = { nodes: [], connections: [], revision: 3 };
+    const planned = planTool("canvas_create_generation_flow", input, emptyState);
+    const generatedNode = (planned.input.ops as Array<Record<string, unknown>>).find((op) => op.type === "add_node");
+    const stateWithCollision = { ...emptyState, nodes: [{ id: String(generatedNode?.id), type: "text" as const, position: { x: 0, y: 0 }, width: 100, height: 100 }] };
+    assert.throws(() => planTool("canvas_create_generation_flow", input, stateWithCollision), /节点 id.*已存在|冲突/);
+});
+
+test("planner rejects explicit generation node ids that are empty or reused", () => {
+    const state = { nodes: [], connections: [], revision: 3 };
+    assert.throws(() => planTool("canvas_create_generation_flow", { prompt: "a forest", textNodeId: "same", targetNodeId: "same" }, state), /复用节点 id/);
+    assert.throws(() => planTool("canvas_create_generation_flow", { prompt: "a forest", textNodeId: "" }, state), /显式节点 id 必须是非空字符串/);
+});

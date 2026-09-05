@@ -23,9 +23,9 @@ export function planTool(name: ToolName, raw: Record<string, unknown>, state: Ca
         const x = d.x ?? nextCanvasX(state), y = d.y ?? 0, gap = d.gap ?? 40;
         input = { ops: d.items.map((item, i) => textOp(item, item.x ?? (d.direction === "row" ? x + i * (340 + gap) : x), item.y ?? (d.direction === "row" ? y : y + i * (240 + gap)))) };
     } else if (name === "canvas_create_image_prompt_flow" || name === "canvas_create_generation_flow") {
-        input = { ...input, ops: generationFlow(input, state, name === "canvas_create_image_prompt_flow" ? "image" : undefined) };
+        input = { ...input, ops: generationFlow(input, state, name === "canvas_create_image_prompt_flow" ? "image" : undefined, name) };
     } else if (name.startsWith("canvas_generate_")) {
-        input = { ...input, ops: generationFlow({ ...input, autoRun: true }, state, name.replace("canvas_generate_", "")) };
+        input = { ...input, ops: generationFlow({ ...input, autoRun: true }, state, name.replace("canvas_generate_", ""), name) };
     } else if (name === "canvas_update_node") {
         const d = input as { id: string; patch?: Record<string, unknown>; metadata?: Record<string, unknown> };
         input = { ops: [{ type: "update_node", id: d.id, patch: d.patch, metadata: d.metadata }] };
@@ -54,15 +54,20 @@ export function planTool(name: ToolName, raw: Record<string, unknown>, state: Ca
 }
 
 function preconditions(input: Record<string, unknown>) { return { ...(typeof input.expectedRevision === "number" ? { expectedRevision: input.expectedRevision } : {}), ...(typeof input.expectedStateHash === "string" ? { expectedStateHash: input.expectedStateHash } : {}) }; }
-function stableGenerationIdentity(input: { nodeId: string; mode?: string; prompt?: string; retry?: boolean }) { return `canvas-generation-${crypto.createHash("sha256").update(JSON.stringify({ nodeId: input.nodeId, mode: input.mode || "image", prompt: input.prompt || "", retry: input.retry === true })).digest("hex").slice(0, 48)}`; }
+function stableGenerationIdentity(input: { nodeId: string; mode?: string; prompt?: string; retry?: boolean }) {
+    return `canvas-generation-${stableDigest({ nodeId: input.nodeId, mode: input.mode || "image", prompt: input.prompt || "", retry: input.retry === true })}`;
+}
 function textOp(d: { id?: string; text?: string; title?: string; width?: number; height?: number }, x: number, y: number) { return { type: "add_node", id: d.id, nodeType: "text", title: d.title, position: { x, y }, width: d.width, height: d.height, metadata: { content: d.text || "", status: "success", fontSize: 14 } }; }
 
-function generationFlow(input: Record<string, unknown>, state: CanvasSnapshot, forcedMode?: string) {
+function generationFlow(input: Record<string, unknown>, state: CanvasSnapshot, forcedMode: string | undefined, toolName: string) {
     const mode = forcedMode || generationMode(input.mode), prompt = String(input.prompt || ""), x = Number(input.x ?? nextCanvasX(state)), y = Number(input.y ?? 0);
-    const textId = `text-${crypto.randomUUID()}`, targetId = `${mode}-${crypto.randomUUID()}`;
+    const requestIdentity = stableRequestIdentity(`generation-flow:${toolName}`, { ...withoutPreconditions(input), mode });
+    const textId = explicitNodeId(input.textNodeId, `agent-generation-text-${requestIdentity}`);
+    const targetId = explicitNodeId(input.targetNodeId, `agent-generation-target-${requestIdentity}`);
+    assertGeneratedNodeIdsAvailable(state, [textId, targetId], "生成流程");
     const references = Array.isArray(input.referenceNodeIds) ? input.referenceNodeIds.filter((id): id is string => typeof id === "string") : [];
     const tokens = [`@[node:${textId}]`, ...references.map((id) => `@[node:${id}]`)], targetPrompt = tokens.join("\n");
-    return [textOp({ id: textId, text: prompt, title: String(input.title || "提示词") }, x, y), generationTargetNodeOp(targetId, { ...input, mode, prompt: targetPrompt }, x + 420, y), { type: "connect_nodes", fromNodeId: textId, toNodeId: targetId }, ...references.map((fromNodeId) => ({ type: "connect_nodes", fromNodeId, toNodeId: targetId })), { type: "select_nodes", ids: [targetId] }, ...(input.autoRun ? [{ type: "run_generation", id: stableGenerationIdentity({ nodeId: `flow:${mode}:${references.join(",")}`, mode, prompt }), nodeId: targetId, mode, prompt: targetPrompt }] : [])];
+    return [textOp({ id: textId, text: prompt, title: String(input.title || "提示词") }, x, y), generationTargetNodeOp(targetId, { ...input, mode, prompt: targetPrompt }, x + 420, y), { type: "connect_nodes", fromNodeId: textId, toNodeId: targetId }, ...references.map((fromNodeId) => ({ type: "connect_nodes", fromNodeId, toNodeId: targetId })), { type: "select_nodes", ids: [targetId] }, ...(input.autoRun ? [{ type: "run_generation", id: stableGenerationIdentity({ nodeId: targetId, mode, prompt: targetPrompt }), nodeId: targetId, mode, prompt: targetPrompt }] : [])];
 }
 
 function generationTargetNodeOp(id: string, input: Record<string, unknown>, x: number, y: number) {
@@ -85,7 +90,9 @@ function workflowOps(input: Record<string, unknown>, state: CanvasSnapshot) {
     const direction = input.direction === "vertical" ? "vertical" : "horizontal", gap = Math.max(48, Number(input.gap || 120)), existing = state.nodes || [];
     const maxX = existing.reduce((max, node) => Math.max(max, node.position.x + node.width), 0), maxY = existing.reduce((max, node) => Math.max(max, node.position.y + node.height), 0);
     const start = input.start && typeof input.start === "object" ? input.start as { x: number; y: number } : { x: existing.length ? maxX + 160 : 80, y: existing.length ? Math.max(80, maxY - 520) : 80 };
-    const ids = new Map(nodes.map((node) => [String(node.ref), `agent-workflow-${slug(String(node.ref))}-${crypto.randomUUID().slice(0, 8)}`]));
+    const workflowIdentity = stableRequestIdentity("workflow", withoutPreconditions(input));
+    const ids = new Map(nodes.map((node) => [String(node.ref), `agent-workflow-${workflowIdentity}-${slug(String(node.ref))}`]));
+    assertGeneratedNodeIdsAvailable(state, [...ids.values()], "工作流");
     const ops: Array<Record<string, unknown>> = [];
     let cursor = { x: Number(start.x), y: Number(start.y) };
     for (const node of nodes) {
@@ -106,7 +113,8 @@ function workflowOps(input: Record<string, unknown>, state: CanvasSnapshot) {
         const type = workflowNodeType(String(node.kind || "text"));
         if (!["image", "video", "audio"].includes(type) || (input.autoRun !== true && node.runGeneration !== true)) continue;
         const prompt = String(node.prompt || node.content || workflowPrompt(String(node.kind || "text"), String(node.title), input));
-        ops.push({ type: "run_generation", id: stableGenerationIdentity({ nodeId: `workflow:${String(node.ref)}`, mode: type, prompt }), nodeId: ids.get(String(node.ref)), mode: type, prompt });
+        const nodeId = ids.get(String(node.ref)) as string;
+        ops.push({ type: "run_generation", id: stableGenerationIdentity({ nodeId, mode: type, prompt }), nodeId, mode: type, prompt });
     }
     return ops;
 }
@@ -121,3 +129,41 @@ function generationModeFromNode(type: CanvasNodeType | undefined): "text" | "ima
 function generationMode(value: unknown): "text" | "image" | "video" | "audio" { return value === "text" || value === "video" || value === "audio" ? value : "image"; }
 function generationTitle(mode: string) { if (mode === "text") return "文本生成"; if (mode === "video") return "视频生成"; if (mode === "audio") return "音频生成"; return "图片生成"; }
 function cleanRecord(value: Record<string, unknown>) { return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined && item !== "")); }
+
+function explicitNodeId(value: unknown, fallback: string) {
+    if (value === undefined) return fallback;
+    if (typeof value !== "string" || !value.trim()) throw new Error("显式节点 id 必须是非空字符串");
+    return value.trim();
+}
+
+function assertGeneratedNodeIdsAvailable(state: CanvasSnapshot, ids: string[], label: string) {
+    if (new Set(ids).size !== ids.length) throw new Error(`${label}生成的节点 id 冲突：同一请求不能复用节点 id`);
+    const existing = new Set((state.nodes || []).map((node) => node.id));
+    const conflict = ids.find((id) => existing.has(id));
+    if (conflict) throw new Error(`${label}生成的节点 id「${conflict}」已存在，拒绝静默覆盖；请确认是否重复请求`);
+}
+
+function stableRequestIdentity(namespace: string, input: unknown) {
+    return `${namespace.replace(/[^a-z0-9-]+/gi, "-")}-${stableDigest(input)}`;
+}
+
+function stableDigest(input: unknown) {
+    return crypto.createHash("sha256").update(stableStringify(input)).digest("hex").slice(0, 48);
+}
+
+function withoutPreconditions(input: Record<string, unknown>) {
+    const { expectedRevision: _expectedRevision, expectedStateHash: _expectedStateHash, ...request } = input;
+    return request;
+}
+
+function stableStringify(value: unknown): string {
+    if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+    if (value && typeof value === "object") {
+        return `{${Object.entries(value as Record<string, unknown>)
+            .filter(([, item]) => item !== undefined)
+            .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+            .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
+            .join(",")}}`;
+    }
+    return JSON.stringify(value);
+}
