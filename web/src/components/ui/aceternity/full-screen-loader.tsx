@@ -37,7 +37,9 @@ export function WorkspaceRouteLoader({ label = "正在打开页面" }: { label?:
     const [visible, setVisible] = useState(false);
 
     useEffect(() => {
-        const timer = window.setTimeout(() => setVisible(true), 140);
+        // Avoid flashing a route mask for fast lazy-route resolutions. The
+        // full-screen auth loader still covers genuine session hydration.
+        const timer = window.setTimeout(() => setVisible(true), 280);
         return () => window.clearTimeout(timer);
     }, []);
 
