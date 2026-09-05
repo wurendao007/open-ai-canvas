@@ -83,21 +83,6 @@ export async function retryCanvasAssetSyncAfterRateLimit<T>(operation: () => Pro
     }
 }
 
-export async function retryCanvasAssetSyncAfterRateLimit<T>(operation: () => Promise<T>, options: { signal?: AbortSignal; maxRetries?: number; wait?: (delayMs: number, signal?: AbortSignal) => Promise<void> } = {}): Promise<T> {
-    const maxRetries = Math.max(0, options.maxRetries ?? 2);
-    const wait = options.wait ?? ((delayMs, signal) => new Promise<void>((resolve, reject) => {
-        const timer = globalThis.setTimeout(resolve, delayMs);
-        signal?.addEventListener("abort", () => { globalThis.clearTimeout(timer); reject(new DOMException("The operation was aborted", "AbortError")); }, { once: true });
-    }));
-    for (let attempt = 0; ; attempt += 1) {
-        throwIfAborted(options.signal);
-        try { return await operation(); } catch (error) {
-            if (!(error instanceof ApiError) || error.status !== 429 || attempt >= maxRetries) throw error;
-            await wait(Math.min(300000, Math.max(0, error.retryAfterMs ?? 60000)), options.signal);
-        }
-    }
-}
-
 export function ensureCanvasNodeAsset(options: EnsureCanvasNodeAssetOptions) {
     const scope = getActiveUserScope();
     const identity = options.taskId || options.node.metadata?.taskId || options.node.metadata?.storageKey || options.node.id;

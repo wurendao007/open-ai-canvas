@@ -98,12 +98,21 @@ export function useCanvasSelectionController({
     const [isNodeDragging, setIsNodeDragging] = useState(false);
     const [dragPreview, setDragPreview] = useState<{ x: number; y: number; nodeIds: Set<string> } | null>(null);
     const dragPreviewRef = useRef<CanvasNodeDragPreview | null>(null);
+    const dragPreviewClearPendingRef = useRef(false);
     const [alignmentGuides, setAlignmentGuides] = useState<{ vertical?: number; horizontal?: number }>({});
 
     // React may repaint for alignment/drop-target state while a drag is active.
     // Re-apply the compositor offset after such commits so React's style diff
     // cannot clear the imperative `translate` property.
     useLayoutEffect(() => {
+        if (dragPreviewClearPendingRef.current) {
+            dragPreviewClearPendingRef.current = false;
+            dragPreviewRef.current = null;
+            applyCanvasNodeDragPreview(containerRef.current, null);
+            setDragPreview(null);
+            setIsNodeDragging(false);
+            return;
+        }
         const preview = dragPreviewRef.current;
         if (preview) applyCanvasNodeDragPreview(containerRef.current, preview);
     });
@@ -263,18 +272,11 @@ export function useCanvasSelectionController({
             if (linkedFolder) onLinkedFolderDrop?.(linkedFolder, positioned.filter((node) => draggedNodeIds.has(node.id)));
             if (clickedNodeId) onNodeDragEnd?.(clickedNodeId);
         }
-        // Keep the compositor preview in place until React has a chance to
-        // commit the final node positions. Clearing it synchronously here
-        // exposes one frame of the old positions and makes nodes/connections
-        // visibly flash at the end of a drag.
-        const dragContainer = containerRef.current;
-        if (dragContainer) {
-            requestAnimationFrame(() => {
-                dragPreviewRef.current = null;
-                applyCanvasNodeDragPreview(dragContainer, null);
-                setDragPreview(null);
-                setIsNodeDragging(false);
-            });
+        // React commits the final node coordinates asynchronously. Defer
+        // clearing the compositor preview to the next layout effect so the
+        // old translate cannot combine with the newly committed transform.
+        if (containerRef.current) {
+            dragPreviewClearPendingRef.current = true;
         } else {
             dragPreviewRef.current = null;
             setDragPreview(null);
@@ -407,6 +409,7 @@ export function useCanvasSelectionController({
         return () => {
             if (dragFrameRef.current) cancelAnimationFrame(dragFrameRef.current);
             if (selectionFrameRef.current) cancelAnimationFrame(selectionFrameRef.current);
+            dragPreviewClearPendingRef.current = false;
             dragPreviewRef.current = null;
             applyCanvasNodeDragPreview(containerRef.current, null);
             applyCanvasAlignmentGuidesPreview(containerRef.current, {});

@@ -37,6 +37,7 @@ export type AssetLibraryPickerFolder = {
 
 type Props = {
     remoteLibrary?: boolean;
+    remoteKind?: "image" | "audio" | "video";
     open: boolean;
     items: AssetLibraryPickerItem[];
     categoryLabels: Record<string, string>;

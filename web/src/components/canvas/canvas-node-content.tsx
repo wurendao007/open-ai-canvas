@@ -48,6 +48,7 @@ export type CanvasNodeContentProps = {
     onToggleBatch?: () => void;
     reduceMediaEffects?: boolean;
     mediaActive?: boolean;
+    onMediaPlayRequest?: (nodeId: string) => void;
 };
 
 type LazyNodeRendererProps = Pick<CanvasNodeContentProps, "node" | "theme" | "reduceMediaEffects">;

@@ -122,6 +122,7 @@ export function VideoPlayer({ src, mimeType, title = "视频", className, brandC
         }
         const volumeSlider = player.querySelector<HTMLElement>(".vds-volume-slider");
         if (volumeSlider) {
+            (volumeSlider as HTMLElement & { disabled?: boolean }).disabled = noAudio;
             volumeSlider.setAttribute("aria-disabled", String(noAudio));
         }
     }, [noAudio]);

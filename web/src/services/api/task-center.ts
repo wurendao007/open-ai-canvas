@@ -45,7 +45,6 @@ export type GenerationTask = {
     previewUrl?: string;
     previewPosterUrl?: string;
     previewKind?: "image" | "video";
-    previewPosterUrl?: string;
     inputJson?: string;
     resultJson?: string;
     resultState?: GenerationTaskResultState;

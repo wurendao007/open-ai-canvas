@@ -23,7 +23,7 @@ describe("canvas node drag overlays", () => {
         expect(projectSource).toContain("setDialogNodeId(node.id);");
         expect(selectionControllerSource).toContain("if (clickedNodeId) onNodeDragEnd?.(clickedNodeId);");
         const commitIndex = selectionControllerSource.indexOf("setNodes(linkedFolder ? positioned : applyFrameDrop(positioned, draggedNodeIds, targetId));");
-        const clearIndex = selectionControllerSource.indexOf("applyCanvasNodeDragPreview(dragContainer, null);");
+        const clearIndex = selectionControllerSource.indexOf("dragPreviewClearPendingRef.current = true;");
         expect(commitIndex).toBeGreaterThan(-1);
         expect(clearIndex).toBeGreaterThan(commitIndex);
     });

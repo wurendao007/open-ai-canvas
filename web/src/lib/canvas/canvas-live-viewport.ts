@@ -12,32 +12,10 @@ export type CanvasNodeDragPreview = {
     nodeIds: ReadonlySet<string>;
 };
 
-export type CanvasNodeSelectionPreview = {
-    includeNodeIds: ReadonlySet<string>;
-    removeNodeIds: ReadonlySet<string>;
-};
-
 export type CanvasAlignmentGuidesPreview = {
     vertical?: number;
     horizontal?: number;
 };
-
-const nodeSelectionPreviewDomStates = new WeakMap<HTMLDivElement, { elementsById: Map<string, HTMLElement>; previousStates: Map<string, "include" | "remove"> }>();
-
-export function applyCanvasNodeSelectionPreview(container: HTMLDivElement | null, preview: CanvasNodeSelectionPreview | null) {
-    if (!container) return;
-    let state = nodeSelectionPreviewDomStates.get(container);
-    if (!state) { state = { elementsById: new Map(), previousStates: new Map() }; nodeSelectionPreviewDomStates.set(container, state); }
-    const next = new Map<string, "include" | "remove">();
-    preview?.includeNodeIds.forEach((id) => next.set(id, "include"));
-    preview?.removeNodeIds.forEach((id) => next.set(id, "remove"));
-    if (state.elementsById.size === 0 && next.size) container.querySelectorAll<HTMLElement>("[data-node-id]").forEach((el) => { if (el.dataset.nodeId) state?.elementsById.set(el.dataset.nodeId, el); });
-    state.previousStates.forEach((_value, id) => { if (next.has(id)) return; state?.elementsById.get(id)?.removeAttribute("data-canvas-selection-preview"); });
-    next.forEach((value, id) => { const el = state?.elementsById.get(id); if (el && state?.previousStates.get(id) !== value) el.dataset.canvasSelectionPreview = value; });
-    state.previousStates = next;
-    if (!preview) state.elementsById.clear();
-}
-
 type NodeDragPreviewDomState = {
     elementsById: Map<string, HTMLElement>;
     previousIds: Set<string>;

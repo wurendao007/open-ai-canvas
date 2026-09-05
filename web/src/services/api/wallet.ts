@@ -151,7 +151,6 @@ export type EmailSetting = {
     updatedBy?: string;
     createdAt?: string;
     updatedAt?: string;
-    registrationAllowedDomains: string[];
 };
 
 export type RedeemBatch = {

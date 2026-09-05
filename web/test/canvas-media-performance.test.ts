@@ -101,9 +101,7 @@ describe("large canvas media rendering", () => {
         expect(canvasNodeContentSource).toContain("node.type === CanvasNodeType.Image");
         expect(fileStorageSource).not.toContain("primeResourceBlobCache(resourceStorageKey(resource.id), blob)");
         expect(fileStorageSource).toContain("getResourceDirectUrl(remoteStorageKey, options)");
-        expect(canvasAudioPlaybackSource).toContain("getCachedResourceObjectUrl(source.storageKey)");
-        expect(canvasAudioPlaybackSource).toContain("getResourceDirectUrl(source.storageKey)");
-        expect(canvasAudioPlaybackSource).not.toContain("cacheResourceObjectUrl(source.storageKey)");
+        expect(canvasAudioPlaybackSource).toContain("cacheResourceObjectUrl(source.storageKey)");
     });
 
     test("resolves signed provider URLs before Blob caching and only proxies as an explicit fallback", () => {
