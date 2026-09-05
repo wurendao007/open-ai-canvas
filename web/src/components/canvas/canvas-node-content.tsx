@@ -547,7 +547,7 @@ function EmptyImageContent({ node, theme, isBatchRoot, batchCount, batchExpanded
     return content;
 }
 
-function VideoNodeContent({ node, theme, reduceMediaEffects, mediaActive = false }: CanvasNodeContentProps) {
+function VideoNodeContent({ node, theme, reduceMediaEffects, mediaActive = false, onMediaPlayRequest }: CanvasNodeContentProps) {
     const playerBoxRef = useRef<HTMLDivElement>(null);
     const { updateMediaNode } = useCanvasNodeActions();
     const hasPassivePreview = Boolean(canvasNodeVideoPreviewUrl(node) || node.metadata?.videoPreview?.storageKey);
@@ -589,7 +589,7 @@ function VideoNodeContent({ node, theme, reduceMediaEffects, mediaActive = false
 
     return (
         <div ref={playerBoxRef} className="relative flex h-full w-full items-center justify-center overflow-hidden rounded-[var(--node-radius)] bg-black">
-            <InactiveVideoPreview node={node} theme={theme} sourceUrl={url} sourceLoading={loading} previewUrl={previewUrl} previewLoading={previewLoading} active={mediaActive} />
+            <InactiveVideoPreview node={node} theme={theme} sourceUrl={url} sourceLoading={loading} previewUrl={previewUrl} previewLoading={previewLoading} active={mediaActive} onPlayRequest={onMediaPlayRequest} />
             {mediaActive && url ? (
                 <div className="absolute inset-0 z-[1] flex items-center justify-center">
                     <div className="relative" style={{ width: fitWidth, height: Math.round(fitHeight) }}>
@@ -639,7 +639,8 @@ function InactiveVideoPreview({
     previewUrl,
     previewLoading,
     active = false,
-}: Pick<CanvasNodeContentProps, "node" | "theme"> & { sourceUrl: string; sourceLoading: boolean; previewUrl: string; previewLoading: boolean; active?: boolean }) {
+    onPlayRequest,
+}: Pick<CanvasNodeContentProps, "node" | "theme"> & { sourceUrl: string; sourceLoading: boolean; previewUrl: string; previewLoading: boolean; active?: boolean; onPlayRequest?: (nodeId: string) => void }) {
     const { updateMetadata } = useCanvasNodeActions();
     const updateMetadataRef = useRef(updateMetadata);
     const hasSource = Boolean(node.metadata?.content || node.metadata?.storageKey);
@@ -669,7 +670,7 @@ function InactiveVideoPreview({
 
     if (previewUrl) {
         return (
-            <div className={`relative size-full overflow-hidden rounded-[var(--node-radius)] bg-black transition-opacity ${active ? "pointer-events-none opacity-0" : ""}`} aria-hidden={active}>
+            <div className={`relative size-full overflow-hidden rounded-[var(--node-radius)] bg-black transition-opacity ${active ? "pointer-events-none opacity-0" : "cursor-pointer"}`} aria-hidden={active} onClick={() => onPlayRequest?.(node.id)}>
                 <img src={previewUrl} alt={`${node.title || "视频"} 静态预览`} loading="lazy" decoding="async" draggable={false} className="pointer-events-none size-full select-none object-contain" />
             </div>
         );
@@ -678,7 +679,7 @@ function InactiveVideoPreview({
     if (hydrating) return <InactiveMediaCard icon={<LoaderCircle className="size-5 animate-spin" />} title={node.title || "视频"} hint="正在保存首帧" theme={theme} />;
     if (sourceUrl) {
         return (
-            <div className={`relative size-full overflow-hidden rounded-[var(--node-radius)] bg-black transition-opacity ${active ? "pointer-events-none opacity-0" : ""}`} aria-hidden={active}>
+            <div className={`relative size-full overflow-hidden rounded-[var(--node-radius)] bg-black transition-opacity ${active ? "pointer-events-none opacity-0" : "cursor-pointer"}`} aria-hidden={active} onClick={() => onPlayRequest?.(node.id)}>
                 <video
                     src={sourceUrl}
                     aria-label={`${node.title || "视频"} 首帧预览`}
