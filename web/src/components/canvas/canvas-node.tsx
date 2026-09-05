@@ -60,6 +60,7 @@ type CanvasNodeProps = {
     onOpenTextEditor?: (node: CanvasNodeData) => void;
     onOpenDirector?: (node: CanvasNodeData) => void;
     onOpenDrawing?: (node: CanvasNodeData) => void;
+    onMediaPlayRequest?: (nodeId: string) => void;
     onContextMenu: (event: React.MouseEvent, nodeId: string) => void;
 };
 
@@ -105,6 +106,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     onOpenTextEditor,
     onOpenDirector,
     onOpenDrawing,
+    onMediaPlayRequest,
     onContextMenu,
 }: CanvasNodeProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
@@ -379,6 +381,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                         onToggleBatch={() => onToggleBatch?.(data.id)}
                         reduceMediaEffects={reduceMediaEffects}
                         mediaActive={mediaActive}
+                        onMediaPlayRequest={onMediaPlayRequest}
                     />
                 </div>
 
