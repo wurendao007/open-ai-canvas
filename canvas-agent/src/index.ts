@@ -1,6 +1,10 @@
 #!/usr/bin/env node
-import { startLocalRuntime } from "./local-runtime-host.js";
-import { startMcpServer } from "./mcp-server.js";
+import { runCli, printHelp } from "./cli.js";
 
-if (process.argv[2] === "mcp") await startMcpServer();
-else startLocalRuntime();
+const args = process.argv.slice(2);
+if (!args.length) {
+    printHelp(process.stdout);
+    process.exitCode = 2;
+} else {
+    await runCli(args);
+}
