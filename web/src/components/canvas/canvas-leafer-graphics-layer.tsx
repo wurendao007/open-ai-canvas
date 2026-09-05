@@ -3,7 +3,7 @@ import { Group, Leafer, Path, Rect } from "leafer-ui";
 
 import { activeConnectionPath, canvasConnectionPath } from "@/components/canvas/canvas-connections";
 import type { CanvasBatchConnectionPreview } from "@/lib/canvas/canvas-batch-connection";
-import { subscribeCanvasGraphicsViewportPreview, subscribeCanvasNodeDragPreview, subscribeCanvasSelectionPreview, type CanvasNodeDragPreview } from "@/lib/canvas/canvas-live-viewport";
+import { subscribeCanvasAlignmentGuidesPreview, subscribeCanvasGraphicsViewportPreview, subscribeCanvasNodeDragPreview, subscribeCanvasSelectionPreview, type CanvasNodeDragPreview } from "@/lib/canvas/canvas-live-viewport";
 import { calculateCanvasPreviewTransform, sameCanvasViewport, shouldRebaseCanvasRaster } from "@/lib/canvas/canvas-leafer-viewport";
 import type { CanvasTheme } from "@/lib/canvas-theme";
 import type { CanvasDisplayConnection, CanvasNodeData, ConnectionHandle, Position, SelectionBox, ViewportTransform } from "@/types/canvas";
@@ -119,12 +119,17 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
         const unsubscribeNodeDrag = subscribeCanvasNodeDragPreview(container, (preview) => {
             applyConnectionDragPreview(underlay, propsRef.current, preview);
         });
+        const unsubscribeAlignmentGuides = subscribeCanvasAlignmentGuidesPreview(container, (guides) => {
+            const rect = container.getBoundingClientRect();
+            syncOverlayGuides(overlay, viewportRef.current, rect.width, rect.height, propsRef.current.theme, guides);
+        });
         resize();
 
         return () => {
             unsubscribe();
             unsubscribeSelection();
             unsubscribeNodeDrag();
+            unsubscribeAlignmentGuides();
             resizeObserver.disconnect();
             window.removeEventListener("resize", resize);
             underlay.leafer.destroy(true);
@@ -170,7 +175,7 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
         if (!underlay || !overlay || !container) return;
         const rect = container.getBoundingClientRect();
         // Guide changes only affect the overlay, not the connection viewport.
-        syncOverlayGuides(overlay, rasterViewportRef.current, rect.width, rect.height, props);
+        syncOverlayGuides(overlay, rasterViewportRef.current, rect.width, rect.height, props.theme, props.alignmentGuides);
         if (isViewportPreview(container, viewportRef.current, rasterViewportRef.current)) {
             applyScenePreview(viewportRef.current, rasterViewportRef.current, underlay, overlay);
         }
@@ -388,15 +393,15 @@ function syncViewport(viewport: ViewportTransform, width: number, height: number
     if (props.selectedNodeBounds) syncSelectionBounds(overlay.selectionBounds, props.selectedNodeBounds, scale);
     overlay.selectionBounds.set({ strokeWidth: 1 / scale, cornerRadius: 12 / scale });
     overlay.draft.set({ strokeWidth: 1.4 / scale, dashPattern: [8 / scale, 8 / scale] });
-    syncOverlayGuides(overlay, viewport, width, height, props);
+    syncOverlayGuides(overlay, viewport, width, height, props.theme, props.alignmentGuides);
 }
 
-function syncOverlayGuides(overlay: OverlayScene, viewport: ViewportTransform, width: number, height: number, props: CanvasLeaferGraphicsLayerProps) {
+function syncOverlayGuides(overlay: OverlayScene, viewport: ViewportTransform, width: number, height: number, theme: CanvasTheme, alignmentGuides: { vertical?: number; horizontal?: number }) {
     const scale = Math.max(viewport.k, 0.05);
     overlay.guides.set({
-        visible: typeof props.alignmentGuides.vertical === "number" || typeof props.alignmentGuides.horizontal === "number",
-        path: guidePath(viewport, width, height, props.alignmentGuides),
-        stroke: props.theme.accent.primary,
+        visible: typeof alignmentGuides.vertical === "number" || typeof alignmentGuides.horizontal === "number",
+        path: guidePath(viewport, width, height, alignmentGuides),
+        stroke: theme.accent.primary,
         strokeWidth: 1 / scale,
         dashPattern: [4 / scale, 4 / scale],
         opacity: 0.72,

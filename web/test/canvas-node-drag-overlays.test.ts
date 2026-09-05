@@ -35,9 +35,12 @@ describe("canvas node drag overlays", () => {
         expect(liveViewportSource).toContain("if (!nextIds?.has(nodeId)) state.elementsById.get(nodeId)?.style.removeProperty(\"translate\");");
         expect(liveViewportSource).toContain("element.style.setProperty(\"translate\", `${preview.x}px ${preview.y}px`);");
         expect(selectionControllerSource).not.toContain("setDragPreview((current) => current ? { ...current, x: latest.x, y: latest.y } : current);");
+        expect(selectionControllerSource).toContain("applyCanvasAlignmentGuidesPreview(containerRef.current, nextGuides);");
+        expect(selectionControllerSource).not.toContain("setAlignmentGuides((current) => current.vertical === nextGuides.vertical");
         expect(leaferGraphicsSource).toContain("subscribeCanvasNodeDragPreview");
         expect(leaferGraphicsSource).toContain("const unsubscribeNodeDrag = subscribeCanvasNodeDragPreview");
-        expect(leaferGraphicsSource).toContain("syncOverlayGuides(overlay, rasterViewportRef.current, rect.width, rect.height, props);");
+        expect(leaferGraphicsSource).toContain("subscribeCanvasAlignmentGuidesPreview");
+        expect(leaferGraphicsSource).toContain("syncOverlayGuides(overlay, rasterViewportRef.current, rect.width, rect.height, props.theme, props.alignmentGuides);");
         expect(leaferGraphicsSource).toContain("function syncOverlayGuides(");
         expect(leaferGraphicsSource).not.toContain("syncViewport(rasterViewportRef.current, rect.width, rect.height, underlay, overlay, props);\n        if (isViewportPreview");
         expect(worldLayersSource).toContain("isDragging={Boolean(props.dragPreview?.nodeIds.has(node.id))}");

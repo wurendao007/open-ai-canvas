@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Dispatch, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type RefObject, type SetStateAction } from "react";
 
-import { applyCanvasNodeDragPreview, applyCanvasNodeSelectionPreview, applyCanvasSelectionPreview, type CanvasNodeDragPreview } from "@/lib/canvas/canvas-live-viewport";
+import { applyCanvasAlignmentGuidesPreview, applyCanvasNodeDragPreview, applyCanvasNodeSelectionPreview, applyCanvasSelectionPreview, type CanvasNodeDragPreview } from "@/lib/canvas/canvas-live-viewport";
 import { calculateNodeAlignment, createNodeAlignmentContext, sameStringSet, type NodeAlignmentContext, type NodeAlignmentSnapState } from "@/lib/canvas/canvas-project-domain";
 import { applyFrameDrop, buildCanvasFrameDropIndex, findFrameDropTargetFromIndex, getFrameChildIds, isFrameNode } from "@/lib/canvas/canvas-frame";
 import { applyCanvasSelectionStrategy, canvasSelectionHitsBounds, createCanvasSelectionBounds, createCanvasSelectionSpatialIndexCache, resolveCanvasSelectionHitMode, resolveCanvasSelectionPreviewDelta, resolveCanvasSelectionStrategy } from "@/lib/canvas/canvas-selection";
@@ -222,6 +222,7 @@ export function useCanvasSelectionController({
         lastFrameDropCheckRef.current = 0;
         setIsNodeDragging(true);
         setAlignmentGuides({});
+        applyCanvasAlignmentGuidesPreview(containerRef.current, {});
         const preview = { x: 0, y: 0, nodeIds: draggedRenderNodeIdSet };
         dragPreviewRef.current = preview;
         setDragPreview(preview);
@@ -247,6 +248,7 @@ export function useCanvasSelectionController({
         historyPausedRef.current = false;
         nodeDraggingRef.current = false;
         setAlignmentGuides({});
+        applyCanvasAlignmentGuidesPreview(containerRef.current, {});
         if (dragRef.current.hasMoved) {
             const draggedNodeIds = new Set(dragRef.current.draggedNodeIds);
             const positioned = clientX == null || clientY == null ? nodesRef.current : nodesRef.current.map((node) => {
@@ -317,7 +319,7 @@ export function useCanvasSelectionController({
                 nodeIds: dragRef.current.draggedRenderNodeIdSet,
             });
             const nextGuides = dragRef.current.hasMoved ? pendingAlignmentGuidesRef.current : {};
-            setAlignmentGuides((current) => current.vertical === nextGuides.vertical && current.horizontal === nextGuides.horizontal ? current : nextGuides);
+            applyCanvasAlignmentGuidesPreview(containerRef.current, nextGuides);
             dragFrameRef.current = null;
         });
     }, [containerRef, viewportRef]);
@@ -407,6 +409,7 @@ export function useCanvasSelectionController({
             if (selectionFrameRef.current) cancelAnimationFrame(selectionFrameRef.current);
             dragPreviewRef.current = null;
             applyCanvasNodeDragPreview(containerRef.current, null);
+            applyCanvasAlignmentGuidesPreview(containerRef.current, {});
             window.removeEventListener("mousemove", handleNodeDragMove);
             window.removeEventListener("mouseup", handleMouseUp);
             window.removeEventListener("pointermove", handlePointerMove);

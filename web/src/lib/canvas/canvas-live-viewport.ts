@@ -4,6 +4,7 @@ export const CANVAS_VIEWPORT_PREVIEW_EVENT = "canvas:viewport-preview";
 export const CANVAS_GRAPHICS_VIEWPORT_PREVIEW_EVENT = "canvas:graphics-viewport-preview";
 export const CANVAS_SELECTION_PREVIEW_EVENT = "canvas:selection-preview";
 export const CANVAS_NODE_DRAG_PREVIEW_EVENT = "canvas:node-drag-preview";
+export const CANVAS_ALIGNMENT_GUIDES_PREVIEW_EVENT = "canvas:alignment-guides-preview";
 
 export type CanvasNodeDragPreview = {
     x: number;
@@ -14,6 +15,11 @@ export type CanvasNodeDragPreview = {
 export type CanvasNodeSelectionPreview = {
     includeNodeIds: ReadonlySet<string>;
     removeNodeIds: ReadonlySet<string>;
+};
+
+export type CanvasAlignmentGuidesPreview = {
+    vertical?: number;
+    horizontal?: number;
 };
 
 const nodeSelectionPreviewDomStates = new WeakMap<HTMLDivElement, { elementsById: Map<string, HTMLElement>; previousStates: Map<string, "include" | "remove"> }>();
@@ -105,6 +111,16 @@ export function subscribeCanvasViewportPreview(container: HTMLDivElement, listen
     const handlePreview = (event: Event) => listener((event as CustomEvent<ViewportTransform>).detail);
     container.addEventListener(CANVAS_VIEWPORT_PREVIEW_EVENT, handlePreview);
     return () => container.removeEventListener(CANVAS_VIEWPORT_PREVIEW_EVENT, handlePreview);
+}
+
+export function applyCanvasAlignmentGuidesPreview(container: HTMLDivElement | null, guides: CanvasAlignmentGuidesPreview) {
+    container?.dispatchEvent(new CustomEvent<CanvasAlignmentGuidesPreview>(CANVAS_ALIGNMENT_GUIDES_PREVIEW_EVENT, { detail: guides }));
+}
+
+export function subscribeCanvasAlignmentGuidesPreview(container: HTMLDivElement, listener: (guides: CanvasAlignmentGuidesPreview) => void) {
+    const handlePreview = (event: Event) => listener((event as CustomEvent<CanvasAlignmentGuidesPreview>).detail);
+    container.addEventListener(CANVAS_ALIGNMENT_GUIDES_PREVIEW_EVENT, handlePreview);
+    return () => container.removeEventListener(CANVAS_ALIGNMENT_GUIDES_PREVIEW_EVENT, handlePreview);
 }
 
 /**
