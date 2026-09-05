@@ -44,8 +44,11 @@ export function planTool(name: ToolName, raw: Record<string, unknown>, state: Ca
     else if (name === "canvas_set_viewport") input = { ops: [{ type: "set_viewport", viewport: (input as { viewport: unknown }).viewport }] };
     else if (name === "canvas_run_generation") {
         const d = input as { nodeId: string; mode?: string; prompt?: string; retry?: boolean; clientOperationId?: string; idempotencyKey?: string };
-        const identity = d.idempotencyKey || d.clientOperationId || stableGenerationIdentity(d);
-        return { tool: "generate", input: { nodeId: d.nodeId, mode: d.mode || "image", prompt: d.prompt || "", retry: d.retry, clientOperationId: identity, ...(d.idempotencyKey ? { idempotencyKey: d.idempotencyKey } : {}), ...(preconditions(raw)) } };
+        const node = state.nodes?.find((candidate) => candidate.id === d.nodeId);
+        const mode = d.mode || generationModeFromNode(node?.type);
+        const prompt = d.prompt || String(node?.metadata?.prompt || node?.metadata?.composerContent || node?.metadata?.content || "");
+        const identity = d.idempotencyKey || d.clientOperationId || stableGenerationIdentity({ nodeId: d.nodeId, mode, prompt, retry: d.retry });
+        return { tool: "generate", input: { nodeId: d.nodeId, mode, prompt, retry: d.retry, clientOperationId: identity, ...(d.idempotencyKey ? { idempotencyKey: d.idempotencyKey } : {}), ...(preconditions(raw)) } };
     } else throw new Error(`未知工具：${name}`);
     return { tool: "apply", input: { ...input, ...preconditions(raw) } };
 }
@@ -59,7 +62,7 @@ function generationFlow(input: Record<string, unknown>, state: CanvasSnapshot, f
     const textId = `text-${crypto.randomUUID()}`, targetId = `${mode}-${crypto.randomUUID()}`;
     const references = Array.isArray(input.referenceNodeIds) ? input.referenceNodeIds.filter((id): id is string => typeof id === "string") : [];
     const tokens = [`@[node:${textId}]`, ...references.map((id) => `@[node:${id}]`)], targetPrompt = tokens.join("\n");
-    return [textOp({ id: textId, text: prompt, title: String(input.title || "提示词") }, x, y), generationTargetNodeOp(targetId, { ...input, mode, prompt: targetPrompt }, x + 420, y), { type: "connect_nodes", fromNodeId: textId, toNodeId: targetId }, ...references.map((fromNodeId) => ({ type: "connect_nodes", fromNodeId, toNodeId: targetId })), { type: "select_nodes", ids: [targetId] }, ...(input.autoRun ? [{ type: "run_generation", id: `generation-${crypto.randomUUID()}`, nodeId: targetId, mode, prompt: targetPrompt }] : [])];
+    return [textOp({ id: textId, text: prompt, title: String(input.title || "提示词") }, x, y), generationTargetNodeOp(targetId, { ...input, mode, prompt: targetPrompt }, x + 420, y), { type: "connect_nodes", fromNodeId: textId, toNodeId: targetId }, ...references.map((fromNodeId) => ({ type: "connect_nodes", fromNodeId, toNodeId: targetId })), { type: "select_nodes", ids: [targetId] }, ...(input.autoRun ? [{ type: "run_generation", id: stableGenerationIdentity({ nodeId: `flow:${mode}:${references.join(",")}`, mode, prompt }), nodeId: targetId, mode, prompt: targetPrompt }] : [])];
 }
 
 function generationTargetNodeOp(id: string, input: Record<string, unknown>, x: number, y: number) {
@@ -102,7 +105,8 @@ function workflowOps(input: Record<string, unknown>, state: CanvasSnapshot) {
     if (input.autoRun === true || nodes.some((node) => node.runGeneration === true)) for (const node of nodes) {
         const type = workflowNodeType(String(node.kind || "text"));
         if (!["image", "video", "audio"].includes(type) || (input.autoRun !== true && node.runGeneration !== true)) continue;
-        ops.push({ type: "run_generation", id: `generation-${crypto.randomUUID()}`, nodeId: ids.get(String(node.ref)), mode: type, prompt: String(node.prompt || node.content || workflowPrompt(String(node.kind || "text"), String(node.title), input)) });
+        const prompt = String(node.prompt || node.content || workflowPrompt(String(node.kind || "text"), String(node.title), input));
+        ops.push({ type: "run_generation", id: stableGenerationIdentity({ nodeId: `workflow:${String(node.ref)}`, mode: type, prompt }), nodeId: ids.get(String(node.ref)), mode: type, prompt });
     }
     return ops;
 }
@@ -113,6 +117,7 @@ function workflowPrompt(kind: string, title: string, input: Record<string, unkno
 function workflowKind(kind: string) { if (["character_cards", "character_three_view"].includes(kind)) return "character"; if (kind === "storyboard_video") return "storyboard"; if (kind === "script") return "script"; return "free"; }
 function slug(value: string) { return value.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "node"; }
 function generationNodeType(mode: string): CanvasNodeType { if (mode === "text") return "text"; if (mode === "video") return "video"; if (mode === "audio") return "audio"; return "image"; }
+function generationModeFromNode(type: CanvasNodeType | undefined): "text" | "image" | "video" | "audio" { return type === "text" || type === "script" ? "text" : type === "video" ? "video" : type === "audio" ? "audio" : "image"; }
 function generationMode(value: unknown): "text" | "image" | "video" | "audio" { return value === "text" || value === "video" || value === "audio" ? value : "image"; }
 function generationTitle(mode: string) { if (mode === "text") return "文本生成"; if (mode === "video") return "视频生成"; if (mode === "audio") return "音频生成"; return "图片生成"; }
 function cleanRecord(value: Record<string, unknown>) { return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined && item !== "")); }

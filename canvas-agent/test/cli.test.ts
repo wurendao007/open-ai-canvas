@@ -36,6 +36,12 @@ test("direct generation planning reuses identity for the same logical request", 
     assert.equal((first.input as { clientOperationId: string }).clientOperationId, (second.input as { clientOperationId: string }).clientOperationId);
 });
 
+test("direct generation planning uses the target node prompt when omitted", () => {
+    const planned = planTool("canvas_run_generation", { nodeId: "image-1" }, { nodes: [{ id: "image-1", type: "image", position: { x: 0, y: 0 }, width: 100, height: 100, metadata: { prompt: "stored prompt" } }], connections: [], revision: 3 });
+    assert.equal((planned.input as { prompt: string }).prompt, "stored prompt");
+    assert.equal((planned.input as { mode: string }).mode, "image");
+});
+
 test("workflow planning preserves references, per-node run flags, dimensions, and gap", () => {
     const planned = planTool("canvas_create_workflow", {
         title: "角色工作流",
@@ -56,4 +62,14 @@ test("workflow planning preserves references, per-node run flags, dimensions, an
     assert.equal(typeof ops.find((op) => op.type === "run_generation")?.id, "string");
     const shotPosition = shot?.position as { x: number; y: number };
     assert.equal(shotPosition.x - ((cards?.position as { x: number }).x + 700), 180);
+});
+
+test("auto-run flow planning reuses its generation identity", () => {
+    const input = { prompt: "a forest", expectedRevision: 3, expectedStateHash: "hash" };
+    const state = { nodes: [], connections: [], revision: 3 };
+    const first = planTool("canvas_generate_image", input, state);
+    const second = planTool("canvas_generate_image", input, state);
+    const firstRun = (first.input.ops as Array<Record<string, unknown>>).find((op) => op.type === "run_generation");
+    const secondRun = (second.input.ops as Array<Record<string, unknown>>).find((op) => op.type === "run_generation");
+    assert.equal(firstRun?.id, secondRun?.id);
 });

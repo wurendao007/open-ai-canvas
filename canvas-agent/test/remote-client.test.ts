@@ -42,6 +42,29 @@ test("RemoteMcpClient maps non-success envelopes to structured errors", async ()
     } finally { globalThis.fetch = original; }
 });
 
+test("RemoteMcpClient preserves the no-replay boundary for dispatched 429 writes", async () => {
+    const original = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => {
+        calls += 1;
+        return new Response(JSON.stringify({ code: 429, msg: "rate limited", data: { retryAfter: 10 } }), { status: 429, headers: { "retry-after": "10" } });
+    };
+    try {
+        const client = new RemoteMcpClient({ serverUrl: "https://canvas.example", accessToken: "access", refreshToken: "refresh" });
+        await assert.rejects(() => client.apply("project", { ops: [] }), (error: unknown) => error instanceof RemoteMcpError && error.status === 429 && error.data?.retryAfter === 10);
+        assert.equal(calls, 1);
+    } finally { globalThis.fetch = original; }
+});
+
+test("RemoteMcpClient uses business envelope status codes", async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = async () => new Response(JSON.stringify({ code: 428, msg: "precondition required" }), { status: 200 });
+    try {
+        const client = new RemoteMcpClient({ serverUrl: "https://canvas.example", accessToken: "access", refreshToken: "refresh" });
+        await assert.rejects(() => client.request("/mcp/projects/p"), (error: unknown) => error instanceof RemoteMcpError && error.status === 428);
+    } finally { globalThis.fetch = original; }
+});
+
 test("RemoteMcpClient rejects plaintext server URLs", () => {
     assert.throws(() => new RemoteMcpClient({ serverUrl: "http://canvas.example", accessToken: "access", refreshToken: "refresh" }), /HTTPS/);
 });

@@ -36,16 +36,20 @@ export class RemoteMcpClient {
                 continue;
             }
             if (response.status === 429 && !rateRetried) {
+                if (dispatchedWrite) {
+                    const raw = await response.text();
+                    const envelope = parseEnvelope<unknown>(raw);
+                    throw new RemoteMcpError(429, envelope?.msg || "远程请求被限流；已发送的写操作不会自动重放", envelope?.data);
+                }
                 rateRetried = true;
                 const delayMs = retryAfterDelay(response.headers.get("retry-after"));
                 if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
                 continue;
             }
             const raw = await response.text();
-            let envelope: RemoteEnvelope<T> | undefined;
-            try { envelope = raw ? JSON.parse(raw) as RemoteEnvelope<T> : undefined; } catch { /* handled below */ }
+            const envelope = parseEnvelope<T>(raw);
             if (!response.ok || !envelope || envelope.code !== 0) {
-                const status = response.status || envelope?.code || 500;
+                const status = envelope && envelope.code !== 0 ? envelope.code : response.status || 500;
                 throw new RemoteMcpError(status, envelope?.msg || `远程请求失败 (${status})`, envelope?.data);
             }
             return envelope.data;
@@ -59,7 +63,7 @@ export class RemoteMcpClient {
                 const raw = await response.text();
                 let envelope: RemoteEnvelope<{ access_token: string; refresh_token: string; expires_in?: number }> | undefined;
                 try { envelope = JSON.parse(raw) as typeof envelope; } catch { /* below */ }
-                if (!response.ok || !envelope || envelope.code !== 0 || !envelope.data?.access_token || !envelope.data.refresh_token) throw new RemoteMcpError(response.status || 401, envelope?.msg || "登录已失效，请重新登录");
+                if (!response.ok || !envelope || envelope.code !== 0 || !envelope.data?.access_token || !envelope.data.refresh_token) throw new RemoteMcpError(envelope && envelope.code !== 0 ? envelope.code : response.status || 401, envelope?.msg || "登录已失效，请重新登录");
                 this.credentials = { ...this.credentials, accessToken: envelope.data.access_token, refreshToken: envelope.data.refresh_token, expiresAt: envelope.data.expires_in ? Date.now() + envelope.data.expires_in * 1_000 : undefined };
                 saveRemoteConfig(this.credentials);
             })().finally(() => { this.refreshPromise = null; });
@@ -84,4 +88,8 @@ function retryAfterDelay(value: string | null, now = Date.now()) {
     const timestamp = Date.parse(value);
     if (!Number.isFinite(timestamp)) return 0;
     return Math.min(Math.max(0, timestamp - now), 30_000);
+}
+
+function parseEnvelope<T>(raw: string): RemoteEnvelope<T> | undefined {
+    try { return raw ? JSON.parse(raw) as RemoteEnvelope<T> : undefined; } catch { return undefined; }
 }
