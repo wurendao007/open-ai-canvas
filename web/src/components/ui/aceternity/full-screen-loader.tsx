@@ -37,10 +37,19 @@ export function WorkspaceRouteLoader({ label = "正在打开页面" }: { label?:
     const [visible, setVisible] = useState(false);
 
     useEffect(() => {
-        // Avoid flashing a route mask for fast lazy-route resolutions. The
-        // full-screen auth loader still covers genuine session hydration.
-        const timer = window.setTimeout(() => setVisible(true), 280);
-        return () => window.clearTimeout(timer);
+        // Let the pending route render once before deciding whether a mask is
+        // needed. If Suspense resolves during these frames, this component is
+        // unmounted without ever painting a route mask. A route that remains
+        // pending gets feedback based on its actual render state instead of a
+        // fixed timeout.
+        let secondFrame = 0;
+        const firstFrame = window.requestAnimationFrame(() => {
+            secondFrame = window.requestAnimationFrame(() => setVisible(true));
+        });
+        return () => {
+            window.cancelAnimationFrame(firstFrame);
+            if (secondFrame) window.cancelAnimationFrame(secondFrame);
+        };
     }, []);
 
     return (
