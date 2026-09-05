@@ -59,7 +59,9 @@ export const useSyncProgressStore = create<SyncProgressStore>((set, get) => ({
     },
 }));
 
-if (typeof window !== "undefined") {
+// 只判断 typeof window 不够：SSR 预渲染和非 DOM 测试环境里 window 可能存在但没有
+// addEventListener，模块副作用抛错会让整个模块导入失败。
+if (typeof globalThis.window?.addEventListener === "function") {
     window.addEventListener("beforeunload", (event) => {
         if (useSyncProgressStore.getState().isAnySyncing()) {
             event.preventDefault();

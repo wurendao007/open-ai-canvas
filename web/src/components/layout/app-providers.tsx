@@ -77,16 +77,17 @@ export function AppProviders({ children }: { children: ReactNode }) {
         applyAppearanceMetadata(appearance);
     }, [appearance, dark, theme]);
 
-    // DEV 复现台必须是同源本地确定性场景：AuthSessionHydrator 会打 /api/auth/session，
-    // ClientRootInit 会打 /api/model-catalog，没有后端时产生真实 502，与导演台无关却会污染判据。
-    // 只精确匹配该路径；生产构建中 import.meta.env.DEV 为 false，本分支被摇树删除。
+    // DEV 复现台和 CLI 文档页都不应被登录态、模型目录等工作区初始化阻塞：
+    // 前者需要确定性本地场景，后者是公开的独立安装页。
+    // 复现台条件在生产构建中会被摇树删除；CLI 条件保持公开页面可直接加载。
     const isolateDevRepro = import.meta.env.DEV && typeof window !== "undefined" && window.location.pathname === "/dev/director-repro";
+    const isolatePublicCli = typeof window !== "undefined" && window.location.pathname === "/cli";
 
     return (
         <ConfigProvider locale={zhCN} theme={getAntThemeConfig(dark, appearance.activeSkin)}>
             <App message={{ duration: 3, maxCount: 3 }} notification={{ duration: 4.5, maxCount: 3, placement: "topRight" }}>
                 <QueryClientProvider client={appQueryClient}>
-                    {isolateDevRepro ? (
+                    {isolateDevRepro || isolatePublicCli ? (
                         children
                     ) : (
                         <AuthSessionHydrator>

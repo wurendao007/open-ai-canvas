@@ -3,9 +3,7 @@ import { FileAudio, FileImage, Film, Grip, Play, RotateCcw, Square, Upload, Wand
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 
 import { generationErrorMessage } from "@/lib/generation-error";
-import { ResolvedResourceAudioSource, ResolvedResourceVideoSource } from "@/components/resolved-resource-video";
-import { CachedResourceImage } from "@/components/cached-resource-image";
-import { resourceFileUrl, resourceIdFromFileUrl, resourceIdFromStorageKey, resourceStorageKey } from "@/services/api/resources";
+import { resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
 import { runBackendGenerationTask, type BackendGenerationResult } from "@/services/api/generation-task";
 import { useConfigStore, type AiConfig, type RunningHubCapability, type WorkflowFieldMapping } from "@/stores/use-config-store";
 import type { ReferenceImage } from "@/types/image";
@@ -384,12 +382,12 @@ function WorkflowParameter({ field, value, onChange }: { field: WorkflowFieldMap
 }
 
 function ResultPreview({ capability, urls }: { capability: RunningHubCapability; urls: string[] }) {
-    if (capability === "video") return <ResolvedResourceVideoSource src={urls[0]} controls playsInline />;
-    if (capability === "audio") return <ResolvedResourceAudioSource src={urls[0]} controls />;
+    if (capability === "video") return <video src={urls[0]} controls playsInline />;
+    if (capability === "audio") return <audio src={urls[0]} controls />;
     return (
         <div className="workflow-test-image-results">
             {urls.map((url) => (
-                resourceIdFromFileUrl(url) ? <CachedResourceImage key={url} storageKey={resourceStorageKey(resourceIdFromFileUrl(url))} src={url} alt="工作流测试输出" /> : <img key={url} src={url} alt="工作流测试输出" />
+                <img key={url} src={url} alt="工作流测试输出" />
             ))}
         </div>
     );

@@ -25,7 +25,7 @@ export async function runCli(args: string[], io: { out?: NodeJS.WritableStream; 
 async function loginWeb(out: NodeJS.WritableStream) {
     const base = serverUrl();
     const scope = ["canvas:read", "canvas:write", "canvas:generate"];
-    const response = await fetch(`${base}/api/mcp/auth/device`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ client_name: "影策 Canvas Agent", scope }) });
+    const response = await fetch(`${base}/api/mcp/auth/device`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ client_name: "KraftReel CLI", scope }) });
     const envelope = await response.json() as { code: number; data: LoginResponse; msg: string };
     if (!response.ok || envelope.code !== 0) throw new Error(envelope.msg || "无法创建设备登录");
     const uri = new URL(envelope.data.verification_uri_complete || envelope.data.verification_uri, base).toString();
@@ -58,5 +58,5 @@ async function projectUse(id: string, out: NodeJS.WritableStream) {
 }
 
 export function printHelp(out: NodeJS.WritableStream = output) {
-    out.write("用法：canvas-agent login web | project list | project use <id> | project unuse | mcp\n");
+    out.write("用法：kraftreel login web | project list | project use <id> | project unuse | mcp\n");
 }

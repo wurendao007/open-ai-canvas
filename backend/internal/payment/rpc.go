@@ -43,7 +43,11 @@ func NewRPCProvider(descriptor Descriptor, packageDir, entry string) (*RPCProvid
 	if strings.TrimSpace(descriptor.ID) == "" || strings.TrimSpace(descriptor.PluginID) == "" {
 		return nil, errors.New("payment plugin descriptor requires id and plugin id")
 	}
-	if filepath.IsAbs(entry) || path.Clean(entry) != entry || !strings.HasPrefix(entry, "backend/") {
+	// entry 是插件清单里的斜杠路径合同（下面用 filepath.FromSlash 落地）。
+	// 这里必须用 path.Clean 校验：filepath.Clean 在 Windows 上会把 "backend/provider"
+	// 规范成 "backend\provider"，与原值不等，导致所有支付插件被误判为非法路径。
+	// 额外拒绝含反斜杠的 entry，拦住 "backend/sub\evil" 这类混合分隔符路径。
+	if filepath.IsAbs(entry) || strings.Contains(entry, `\`) || path.Clean(entry) != entry || !strings.HasPrefix(entry, "backend/") {
 		return nil, errors.New("payment plugin entry must be relative to backend/")
 	}
 	if strings.TrimSpace(packageDir) == "" {

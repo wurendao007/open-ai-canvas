@@ -3,9 +3,9 @@ import { AlertTriangle, BadgeCheck, Check, Cloud, Database, Globe2, HardDrive, K
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useBlocker } from "react-router";
 
-import { changesRequireOSSRetest, DEFAULT_OSS_PATH_PREFIX, getS3PresetHints, normalizeOSSConnectionTestInput, S3_PRESET_OPTIONS, type OSSConnectionTestResult, type S3Preset } from "@/lib/oss-settings";
+import { changesRequireOSSRetest, DEFAULT_OSS_PATH_PREFIX, getCDNAuthTypeOptions, getS3PresetHints, isValidCDNBaseURL, normalizeOSSConnectionTestInput, S3_PRESET_OPTIONS, supportsCDNViewerAuth, validateCDNViewerAuth, type CDNAuthType, type OSSConnectionTestResult, type S3Preset } from "@/lib/oss-settings";
 import { cn } from "@/lib/utils";
-import { getAdminOSSSetting, testAdminOSSConnection, updateAdminOSSSetting, type AdminOSSSetting } from "@/services/api/auth";
+import { getAdminOSSSetting, testAdminOSSConnection, updateAdminOSSSetting, type AdminOSSSetting, type AdminOSSSettingInput } from "@/services/api/auth";
 import { useAppearanceStore } from "@/stores/use-appearance-store";
 import { AdminPageFrame } from "../components/admin-shell";
 import { AdminStatusBadge, configuredSecretText, SettingsSectionCard } from "../components/admin-ui";
@@ -17,6 +17,8 @@ type OSSFormValues = {
     region: string;
     endpoint: string;
     cdnBaseUrl: string;
+    cdnAuthType: CDNAuthType;
+    cdnAuthKey: string;
     bucket: string;
     accessKeyId: string;
     accessKeySecret: string;
@@ -27,13 +29,13 @@ type OSSFormValues = {
     allowUserS3: boolean;
 };
 
-type StoragePayload = Pick<AdminOSSSetting, "enabled" | "provider" | "region" | "endpoint" | "cdnBaseUrl" | "bucket" | "accessKeyId" | "accessKeySecret" | "sessionToken" | "publicBaseUrl" | "pathPrefix" | "s3Preset" | "pathStyle" | "allowUserS3">;
+type StoragePayload = Required<AdminOSSSettingInput>;
 
 const STORAGE_MODES: Array<{ mode: StorageMode; label: string; short: string; description: string }> = [
-    { mode: "local", label: "服务器本地", short: "本地磁盘", description: "新增资源写入当前部署的数据目录，通过后端签名链接访问。" },
-    { mode: "aliyun", label: "阿里云 OSS", short: "对象存储", description: "新增资源写入阿里云 Bucket，可选 CDN 域名读取。" },
-    { mode: "tencent", label: "腾讯云 COS", short: "对象存储", description: "新增资源写入腾讯云 Bucket，可由 Region 生成 Endpoint。" },
-    { mode: "qiniu", label: "七牛云 Kodo", short: "对象存储", description: "新增资源上传到 Kodo；无绑定域名时由后端代理读取。" },
+    { mode: "local", label: "服务器本地", short: "本地磁盘", description: "新增资源写入当前部署的数据目录，通过登录态文件接口访问。" },
+    { mode: "aliyun", label: "阿里云 OSS", short: "对象存储", description: "新增资源写入阿里云 Bucket；浏览器读取使用短时 OSS 授权地址。" },
+    { mode: "tencent", label: "腾讯云 COS", short: "对象存储", description: "新增资源写入腾讯云 Bucket；浏览器读取使用短时 COS 授权地址。" },
+    { mode: "qiniu", label: "七牛云 Kodo", short: "对象存储", description: "新增资源上传到 Kodo；读取使用 Kodo S3 短时签名地址。" },
     { mode: "s3", label: "S3 兼容存储", short: "对象存储", description: "支持 AWS S3、Cloudflare R2、Backblaze B2、RustFS 与自定义 S3 Endpoint。" },
 ];
 
@@ -310,6 +312,8 @@ export default function StorageSettingsPage() {
     const currentValues = form.getFieldsValue(true);
     const normalizedDraft = normalizeStoragePayload(currentValues, setting);
     const hasCurrentProviderSecret = draftMode !== "local" && setting.provider === draftMode && setting.hasAccessKeySecret;
+    const cdnBaseUrlDraft = normalizedDraft.cdnBaseUrl;
+    const hasCurrentCDNAuthKey = draftMode !== "local" && setting.provider === draftMode && setting.cdnBaseUrl === cdnBaseUrlDraft && setting.hasCdnAuthKey === true;
 
     return (
         <AdminPageFrame title="存储服务" description="配置新增资源的默认存储位置" scroll>
@@ -483,7 +487,7 @@ export default function StorageSettingsPage() {
                                             </Form.Item>
                                         ) : null}
                                         <div className="admin-storage-form-grid is-location">
-                                            <Form.Item name="region" label="Region" extra={draftMode === "tencent" ? "Endpoint 留空时由 Region 自动生成。" : draftMode === "qiniu" ? "无绑定域名时用于兼容 S3 的私有读取。" : "按云厂商控制台显示值填写。"}>
+                                            <Form.Item name="region" label="Region" extra={draftMode === "tencent" ? "Endpoint 留空时由 Region 自动生成。" : draftMode === "qiniu" ? "用于兼容 S3 的私有读取签名，如 z0 / cn-east-1。" : "按云厂商控制台显示值填写。"}>
                                                 <Input
                                                     autoComplete="off"
                                                     placeholder={
@@ -508,7 +512,7 @@ export default function StorageSettingsPage() {
                                     </div>
 
                                     <div className="admin-storage-form-section">
-                                        <FormSectionTitle icon={<Globe2 className="size-4" />} title="连接与读取出口" description="Endpoint 用于服务端写入；CDN 或绑定域名只决定浏览器读取出口。" />
+                                        <FormSectionTitle icon={<Globe2 className="size-4" />} title="连接与读取出口" description="Endpoint 用于服务端写入；公网 CDN 或七牛绑定域名用于浏览器读取。" />
                                         <div className="admin-storage-form-grid">
                                             <Form.Item
                                                 name="endpoint"
@@ -537,13 +541,50 @@ export default function StorageSettingsPage() {
                                             </Form.Item>
                                             <Form.Item
                                                 name="cdnBaseUrl"
-                                                label={draftMode === "qiniu" ? "绑定域名（可选）" : "CDN 加速域名（可选）"}
-                                                extra={draftMode === "qiniu" ? "留空时浏览器通过当前后端代理读取七牛私有对象。" : "只填写域名根地址，不包含路径、查询参数或认证信息。"}
+                                                label={draftMode === "qiniu" ? "绑定域名（可选）" : draftMode === "s3" ? "公网访问域名（可选）" : "公网 CDN 域名（可选）"}
+                                                extra={
+                                                    draftMode === "qiniu"
+                                                        ? "填写后使用七牛私有下载签名；留空时使用 Kodo S3 短时签名。"
+                                                        : draftMode === "s3"
+                                                          ? "用于浏览器直接读取 S3 对象；该域名必须已配置公开读取或由 CDN/反向代理自行完成鉴权。留空时继续使用 S3 短时签名或同源代理。"
+                                                          : "配置 Viewer 鉴权后走 CDN 边缘节点；未配置时继续使用源站短时签名，不会返回裸 CDN 链接。"
+                                                }
+                                                rules={[{ validator: (_, value: string) => (!value?.trim() || isValidCDNBaseURL(value.trim()) ? Promise.resolve() : Promise.reject(new Error("请填写 HTTPS 域名根地址（内网部署可用 HTTP），不能包含路径、查询参数或认证信息"))) }]}
                                             >
-                                                <Input autoComplete="off" inputMode="url" placeholder="https://media.example.com" />
+                                                <Input
+                                                    autoComplete="off"
+                                                    inputMode="url"
+                                                    placeholder="https://media.example.com"
+                                                    onChange={(event) => {
+                                                        const nextDomain = event.target.value.trim().replace(/\/+$/, "");
+                                                        if (nextDomain !== cdnBaseUrlDraft) form.setFieldsValue({ cdnAuthType: "", cdnAuthKey: "" });
+                                                    }}
+                                                />
                                             </Form.Item>
                                         </div>
                                     </div>
+
+                                    {supportsCDNViewerAuth(draftMode as Exclude<StorageMode, "local">) && cdnBaseUrlDraft ? (
+                                        <div className="admin-storage-form-section">
+                                            <FormSectionTitle
+                                                icon={<ShieldCheck className="size-4" />}
+                                                title="CDN Viewer 鉴权"
+                                                description="鉴权密钥在 CDN 控制台单独配置，与对象存储 AK/SK 无关；边缘节点会拒绝未签名或过期请求。"
+                                            />
+                                            <div className="admin-storage-form-grid">
+                                                <Form.Item name="cdnAuthType" label="鉴权方式" extra="必须与 CDN 控制台中该域名启用的方式一致。">
+                                                    <Select options={getCDNAuthTypeOptions(draftMode as Exclude<StorageMode, "local">)} />
+                                                </Form.Item>
+                                                <Form.Item
+                                                    name="cdnAuthKey"
+                                                    label={hasCurrentCDNAuthKey ? `鉴权密钥（${configuredSecretText}）` : "鉴权密钥"}
+                                                    extra={hasCurrentCDNAuthKey ? "留空保留原密钥；更换 CDN 域名后必须重新填写。" : "填写 CDN 控制台中该域名的鉴权 Key。"}
+                                                >
+                                                    <Input.Password autoComplete="new-password" placeholder={hasCurrentCDNAuthKey ? "留空保留原密钥" : "CDN 鉴权 Key"} />
+                                                </Form.Item>
+                                            </div>
+                                        </div>
+                                    ) : null}
 
                                     <div className="admin-storage-form-section">
                                         <FormSectionTitle icon={<KeyRound className="size-4" />} title="服务端访问凭据" description="密钥仅用于当前后端读写对象；切换厂商时不能复用另一厂商的 Secret。" />
@@ -614,6 +655,8 @@ function formValues(setting: AdminOSSSetting): OSSFormValues {
         region: setting.region || "",
         endpoint: setting.endpoint || "",
         cdnBaseUrl: setting.cdnBaseUrl || "",
+        cdnAuthType: setting.cdnAuthType || "",
+        cdnAuthKey: "",
         bucket: setting.bucket || "",
         accessKeyId: setting.accessKeyId || "",
         accessKeySecret: "",
@@ -631,6 +674,8 @@ function providerDraftValues(mode: Exclude<StorageMode, "local">, setting: Admin
             region: setting.region || "",
             endpoint: setting.endpoint || "",
             cdnBaseUrl: setting.cdnBaseUrl || "",
+            cdnAuthType: setting.cdnAuthType || "",
+            cdnAuthKey: "",
             bucket: setting.bucket || "",
             accessKeyId: setting.accessKeyId || "",
             accessKeySecret: "",
@@ -644,6 +689,8 @@ function providerDraftValues(mode: Exclude<StorageMode, "local">, setting: Admin
         region: "",
         endpoint: "",
         cdnBaseUrl: "",
+        cdnAuthType: "",
+        cdnAuthKey: "",
         bucket: "",
         accessKeyId: "",
         accessKeySecret: "",
@@ -660,12 +707,16 @@ function normalizeStoragePayload(values: Partial<OSSFormValues>, setting: AdminO
     const region = values.region?.trim() || "";
     let endpoint = trimTrailingSlash(values.endpoint || "");
     if (provider === "tencent" && !endpoint && region) endpoint = `https://cos.${region}.myqcloud.com`;
+    const cdnBaseUrl = trimTrailingSlash(values.cdnBaseUrl || "");
+    const cdnAuthSupported = supportsCDNViewerAuth(provider) && cdnBaseUrl !== "";
     return {
         enabled: mode !== "local",
         provider,
         region,
         endpoint,
-        cdnBaseUrl: trimTrailingSlash(values.cdnBaseUrl || ""),
+        cdnBaseUrl,
+        cdnAuthType: cdnAuthSupported ? values.cdnAuthType || "" : "",
+        cdnAuthKey: cdnAuthSupported ? values.cdnAuthKey?.trim() || "" : "",
         bucket: values.bucket?.trim() || "",
         accessKeyId: values.accessKeyId?.trim() || "",
         accessKeySecret: values.accessKeySecret?.trim() || "",
@@ -682,8 +733,9 @@ function hasStorageChanges(values: Partial<OSSFormValues>, setting: AdminOSSSett
     if (!setting) return false;
     const draft = normalizeStoragePayload(values, setting);
     const saved = normalizeStoragePayload(formValues(setting), setting);
-    if (draft.accessKeySecret || draft.sessionToken) return true;
-    return (Object.keys(saved) as Array<keyof StoragePayload>).some((key) => key !== "accessKeySecret" && key !== "sessionToken" && draft[key] !== saved[key]);
+    // 三个只写字段服务端不会回显，填了就一定是改动。
+    if (draft.accessKeySecret || draft.sessionToken || draft.cdnAuthKey) return true;
+    return (Object.keys(saved) as Array<keyof StoragePayload>).some((key) => key !== "accessKeySecret" && key !== "sessionToken" && key !== "cdnAuthKey" && draft[key] !== saved[key]);
 }
 
 function validateStorageDraft(values: OSSFormValues, setting: AdminOSSSetting) {
@@ -694,7 +746,14 @@ function validateStorageDraft(values: OSSFormValues, setting: AdminOSSSetting) {
         return draft.provider === "tencent" ? "请填写腾讯云 COS Region 或 Endpoint" : draft.provider === "qiniu" ? "请填写七牛云 Kodo 上传 Endpoint" : draft.provider === "s3" ? "请填写 S3 Endpoint 服务根 URL" : "请填写阿里云 OSS Endpoint";
     if (draft.provider === "s3" && !draft.region) return "请填写 S3 Region";
     if (!isHTTPURL(draft.endpoint)) return "Endpoint 必须是完整的 http/https 地址";
-    if (draft.cdnBaseUrl && !isValidCDNBaseURL(draft.cdnBaseUrl)) return "CDN 或绑定域名只能填写 http/https 根地址，不能包含认证、路径、查询参数或片段";
+    if (draft.cdnBaseUrl && !isValidCDNBaseURL(draft.cdnBaseUrl)) return "CDN 或绑定域名需填写 HTTPS 根地址（内网部署可用 HTTP），且不能包含认证、路径、查询参数或片段";
+    const cdnAuthError = validateCDNViewerAuth({
+        provider: draft.provider,
+        cdnBaseUrl: draft.cdnBaseUrl,
+        cdnAuthType: draft.cdnAuthType,
+        hasAuthKey: Boolean(draft.cdnAuthKey) || (setting.provider === draft.provider && setting.cdnBaseUrl === draft.cdnBaseUrl && setting.hasCdnAuthKey === true),
+    });
+    if (cdnAuthError) return cdnAuthError;
     if (!draft.accessKeyId) return `请填写 ${accessKeyIdLabel(draft.provider)}`;
     if (!draft.accessKeySecret && !(setting.provider === draft.provider && setting.hasAccessKeySecret)) return `请填写 ${accessKeySecretLabel(draft.provider)}`;
     return "";
@@ -715,9 +774,10 @@ function validatePublicBaseURL(value: string) {
 
 function storageResponseMatches(setting: AdminOSSSetting, expected: StoragePayload) {
     const actual = normalizeStoragePayload(formValues(setting), setting);
-    const fields: Array<keyof StoragePayload> = ["enabled", "provider", "region", "endpoint", "cdnBaseUrl", "bucket", "accessKeyId", "publicBaseUrl", "pathPrefix", "s3Preset", "pathStyle", "allowUserS3"];
+    const fields: Array<keyof StoragePayload> = ["enabled", "provider", "region", "endpoint", "cdnBaseUrl", "cdnAuthType", "bucket", "accessKeyId", "publicBaseUrl", "pathPrefix", "s3Preset", "pathStyle", "allowUserS3"];
     if (expected.accessKeySecret && !setting.hasAccessKeySecret) return false;
     if (expected.sessionToken && !setting.hasSessionToken) return false;
+    if (expected.cdnAuthKey && !setting.hasCdnAuthKey) return false;
     return fields.every((key) => actual[key] === expected[key]);
 }
 
@@ -731,6 +791,8 @@ function isAdminOSSSetting(value: unknown): value is AdminOSSSetting {
         typeof setting.region === "string" &&
         typeof setting.endpoint === "string" &&
         typeof setting.cdnBaseUrl === "string" &&
+        ["", "aliyun_a", "aliyun_b", "aliyun_c", "tencent_a", "tencent_d"].includes(setting.cdnAuthType || "") &&
+        typeof setting.hasCdnAuthKey === "boolean" &&
         typeof setting.bucket === "string" &&
         typeof setting.accessKeyId === "string" &&
         typeof setting.hasAccessKeySecret === "boolean" &&
@@ -754,8 +816,8 @@ function storageProviderLabel(provider?: StorageMode) {
 function providerGuidance(mode: Exclude<StorageMode, "local">) {
     if (mode === "s3") return "使用预设快速填写 Region 与 Endpoint，也可以选择自定义；自托管 S3 仍受服务端私网主机白名单约束。";
     if (mode === "tencent") return "腾讯云可只填写 Region，由服务端生成标准 COS Endpoint；也可填写完整 Endpoint 覆盖。";
-    if (mode === "qiniu") return "七牛上传必须配置上传 Endpoint；绑定域名可选，留空时资源由当前后端使用 AK/SK 代理读取。";
-    return "阿里云需要完整 OSS Endpoint、Bucket 和访问密钥；CDN 域名可选。";
+    if (mode === "qiniu") return "七牛上传必须配置上传 Endpoint；读取使用 Kodo S3 短时签名，跨域失败时自动回退后端代理。";
+    return "阿里云需要完整 OSS Endpoint、Bucket 和访问密钥；浏览器读取使用短时授权地址。";
 }
 
 function accessKeyIdLabel(mode: Exclude<StorageMode, "local"> | AdminOSSSetting["provider"]) {
@@ -775,15 +837,6 @@ function isHTTPURL(value: string) {
     }
 }
 
-function isValidCDNBaseURL(value: string) {
-    try {
-        const parsed = new URL(value);
-        return Boolean(parsed.hostname) && ["http:", "https:"].includes(parsed.protocol) && !parsed.username && !parsed.password && !parsed.search && !parsed.hash && !parsed.pathname.replace(/\/+$/, "");
-    } catch {
-        return false;
-    }
-}
-
 function trimTrailingSlash(value: string) {
     return value.trim().replace(/\/+$/, "");
 }
@@ -794,7 +847,9 @@ function connectionInput(values: Partial<OSSFormValues>) {
         s3Preset: values.s3Preset,
         region: values.region,
         endpoint: values.endpoint,
-        cdnBaseUrl: values.cdnBaseUrl,
+        cdnBaseUrl: values.mode === "s3" ? "" : values.cdnBaseUrl,
+        cdnAuthType: values.mode !== "s3" && values.mode !== "local" ? values.cdnAuthType : "",
+        cdnAuthKey: values.mode !== "s3" && values.mode !== "local" ? values.cdnAuthKey : "",
         bucket: values.bucket,
         accessKeyId: values.accessKeyId,
         accessKeySecret: values.accessKeySecret,

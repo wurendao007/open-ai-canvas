@@ -1,5 +1,4 @@
-import localforage from "localforage";
-
+import { createLazyLocalForage } from "@/lib/localforage-storage";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { getResourceBlob, resourceIdFromStorageKey } from "@/services/api/resources";
 
@@ -13,8 +12,8 @@ type ResourceCacheMeta = {
     lastAccessedAt: number;
 };
 
-const blobStore = localforage.createInstance({ name: "infinite-canvas", storeName: "resource_blobs" });
-const metaStore = localforage.createInstance({ name: "infinite-canvas", storeName: "resource_blob_meta" });
+const getBlobStore = createLazyLocalForage({ name: "infinite-canvas", storeName: "resource_blobs" });
+const getMetaStore = createLazyLocalForage({ name: "infinite-canvas", storeName: "resource_blob_meta" });
 const objectUrls = new Map<string, string>();
 const sessionBlobs = new Map<string, Blob>();
 const inFlight = new Map<string, Promise<string>>();
@@ -54,7 +53,7 @@ export async function cacheResourceObjectUrl(storageKey: string, options?: { pro
         return generation === cacheGeneration && scope === getActiveUserScope() ? value : "";
     }
 
-    const task = withDownloadSlot(() => downloadAndCacheResource(storageKey, target, options)).finally(() => {
+    const task = withDownloadSlot(() => downloadAndCacheResource(storageKey, target, generation, options)).finally(() => {
         if (inFlight.get(target.key) === task) inFlight.delete(target.key);
     });
     inFlight.set(target.key, task);
@@ -97,7 +96,7 @@ export async function getCachedResourceBlob(storageKey: string) {
     const target = await cacheTarget(storageKey);
     if (!target) return null;
     if (generation !== cacheGeneration || scope !== getActiveUserScope()) return null;
-    const cached = await blobStore.getItem<Blob>(target.key);
+    const cached = await getBlobStore().getItem<Blob>(target.key);
     if (generation !== cacheGeneration || scope !== getActiveUserScope()) return null;
     if (cached) {
         void touchCacheMeta(target).catch(() => undefined);
@@ -109,30 +108,30 @@ export async function getCachedResourceBlob(storageKey: string) {
     if (pending) {
         await pending;
         if (generation !== cacheGeneration || scope !== getActiveUserScope()) return null;
-        const value = sessionBlobs.get(target.key) || (await blobStore.getItem<Blob>(target.key));
+        const value = sessionBlobs.get(target.key) || (await getBlobStore().getItem<Blob>(target.key));
         return generation === cacheGeneration && scope === getActiveUserScope() ? value : null;
     }
     await cacheResourceObjectUrl(storageKey);
     if (generation !== cacheGeneration || scope !== getActiveUserScope()) return null;
-    const value = sessionBlobs.get(target.key) || (await blobStore.getItem<Blob>(target.key));
+    const value = sessionBlobs.get(target.key) || (await getBlobStore().getItem<Blob>(target.key));
     return generation === cacheGeneration && scope === getActiveUserScope() ? value : null;
 }
 
-async function downloadAndCacheResource(storageKey: string, target: ResourceCacheMeta, options?: { proxyFallback?: boolean }) {
-    // A queued request may only start after the user has switched accounts.
-    // Resolve it as a cache miss instead of issuing the old resource ID under
-    // the new session.
-    if (target.userScope !== getActiveUserScope()) return "";
-    const blob = await downloadResourceBlob(storageKey, target, options);
+async function downloadAndCacheResource(storageKey: string, target: ResourceCacheMeta, generation: number, options?: { proxyFallback?: boolean }) {
+    // A queued request may only start after the user has switched accounts or
+    // the cache has been cleared. Resolve it as a miss without issuing the old
+    // resource ID under the new session.
+    if (generation !== cacheGeneration || target.userScope !== getActiveUserScope()) return "";
+    const blob = await downloadResourceBlob(storageKey, target, generation, options);
     if (!blob) return "";
     return objectUrl(target.key, blob);
 }
 
-async function downloadResourceBlob(storageKey: string, target: ResourceCacheMeta, options?: { proxyFallback?: boolean }) {
+async function downloadResourceBlob(storageKey: string, target: ResourceCacheMeta, generation: number, options?: { proxyFallback?: boolean }) {
     // Read the object directly when provider CORS allows it. A CORS failure
     // falls back to a one-time authenticated stream through the app so the
     // Blob can still enter IndexedDB; the server never persists that copy.
-    const generation = cacheGeneration;
+    if (generation !== cacheGeneration || target.userScope !== getActiveUserScope()) return null;
     const blob = await getResourceBlob(storageKey, options);
     if (!blob) return null;
     if (generation !== cacheGeneration || target.userScope !== getActiveUserScope()) return null;
@@ -152,16 +151,16 @@ async function persistBlob(target: ResourceCacheMeta, blob: Blob) {
     if (blob.size > (await cacheBudget())) return;
     await evictFor(blob.size, target.key);
     try {
-        await blobStore.setItem(target.key, blob);
-        await metaStore.setItem(target.key, { ...target, size: blob.size, mimeType: blob.type || target.mimeType, lastAccessedAt: Date.now() });
+        await getBlobStore().setItem(target.key, blob);
+        await getMetaStore().setItem(target.key, { ...target, size: blob.size, mimeType: blob.type || target.mimeType, lastAccessedAt: Date.now() });
     } catch (error) {
         await evictFor(blob.size, target.key, true);
         try {
-            await blobStore.setItem(target.key, blob);
-            await metaStore.setItem(target.key, { ...target, size: blob.size, mimeType: blob.type || target.mimeType, lastAccessedAt: Date.now() });
+            await getBlobStore().setItem(target.key, blob);
+            await getMetaStore().setItem(target.key, { ...target, size: blob.size, mimeType: blob.type || target.mimeType, lastAccessedAt: Date.now() });
         } catch {
-            await blobStore.removeItem(target.key);
-            await metaStore.removeItem(target.key);
+            await getBlobStore().removeItem(target.key);
+            await getMetaStore().removeItem(target.key);
             throw error;
         }
     }
@@ -173,7 +172,7 @@ async function readCachedObjectUrl(target: ResourceCacheMeta) {
         void touchCacheMeta(target).catch(() => undefined);
         return existing;
     }
-    const blob = await blobStore.getItem<Blob>(target.key);
+    const blob = await getBlobStore().getItem<Blob>(target.key);
     if (!blob) return "";
     void touchCacheMeta(target).catch(() => undefined);
     return objectUrl(target.key, blob);
@@ -199,14 +198,14 @@ async function cacheTarget(storageKey: string): Promise<ResourceCacheMeta | null
 }
 
 async function touchCacheMeta(target: ResourceCacheMeta) {
-    const current = await metaStore.getItem<ResourceCacheMeta>(target.key);
+    const current = await getMetaStore().getItem<ResourceCacheMeta>(target.key);
     if (!current || Date.now() - current.lastAccessedAt < TOUCH_INTERVAL_MS) return;
-    await metaStore.setItem(target.key, { ...current, lastAccessedAt: Date.now() });
+    await getMetaStore().setItem(target.key, { ...current, lastAccessedAt: Date.now() });
 }
 
 async function evictFor(incomingBytes: number, protectedKey: string, aggressive = false) {
     const metas: ResourceCacheMeta[] = [];
-    await metaStore.iterate<ResourceCacheMeta, void>((value) => {
+    await getMetaStore().iterate<ResourceCacheMeta, void>((value) => {
         if (value?.key) metas.push(value);
     });
     const budget = aggressive ? Math.max(MIN_CACHE_BYTES, (await cacheBudget()) / 2) : await cacheBudget();
@@ -227,7 +226,7 @@ async function removeCacheEntry(meta: ResourceCacheMeta) {
     if (url) URL.revokeObjectURL(url);
     objectUrls.delete(meta.key);
     sessionBlobs.delete(meta.key);
-    await Promise.all([blobStore.removeItem(meta.key), metaStore.removeItem(meta.key)]);
+    await Promise.all([getBlobStore().removeItem(meta.key), getMetaStore().removeItem(meta.key)]);
 }
 
 async function cacheBudget() {

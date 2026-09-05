@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "kraftreel": {
+      "command": "npx",
+      "args": ["-y", "kraftreel-cli", "mcp"],
+      "startup_timeout_sec": 20,
+      "tool_timeout_sec": 90
+    }
+  }
+}

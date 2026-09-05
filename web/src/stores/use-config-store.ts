@@ -1,4 +1,3 @@
-import { useMemo } from "react";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { nanoid } from "nanoid";
@@ -8,9 +7,7 @@ import { scopedLocalStorage } from "@/lib/user-scope";
 import { modelProtocolCapability, normalizeModelProtocol, type ModelProtocol } from "@/lib/model-protocols";
 import { normalizeVideoDuration, normalizeVideoResolution } from "@/lib/video-generation-options";
 import { workflowFieldRole, workflowFieldSafeToOverride, workflowVideoFieldsFromJson, type ModelCapabilityConfig } from "@/lib/model-capabilities";
-import { useLocalDreaminaModelStore } from "@/stores/use-local-dreamina-model-store";
 import { useUserStore } from "@/stores/use-user-store";
-import type { DreaminaLocalModel } from "@/services/local-dreamina-model-catalog";
 import type { CapabilitySpec, PublicLogicalModelPriceTier } from "@/services/api/logical-models";
 
 export type ApiCallFormat = "openai" | "gemini" | "claude";
@@ -374,8 +371,7 @@ export type ModelChannel = {
 		logicalPriceTiers?: PublicLogicalModelPriceTier[];
         defaultOptions?: Record<string, unknown>;
     }>;
-    transport?: "backend-channel" | "local-runtime";
-    localModels?: DreaminaLocalModel[];
+    transport?: "backend-channel";
 };
 
 export type AiConfig = {
@@ -547,8 +543,6 @@ export function filterModelsByCapability(models: string[], capability?: ModelCap
         const decoded = decodeChannelModel(model);
         const channel = decoded ? channels?.find((item) => item.id === decoded.channelId) : undefined;
         const modelName = decoded?.model || modelOptionName(model);
-        const local = channel?.localModels?.find((item) => item.id === modelName);
-        if (local) return local.modality === capability;
         const costEntry = channel?.modelCosts?.find((item) => item.model === modelName);
         // 协议层优先级最高：协议决定 API 端点，明确属于其他能力时直接排除，
         // 防止用户将 video/image/audio 协议的模型误标为 text 后混入文本下拉。
@@ -588,7 +582,6 @@ function isAiConfigReady(config: AiConfig, model: string) {
         return Boolean(config.comfyBridge.enabled && config.comfyBridge.bridgeId.trim() && config.comfyBridge.workflowId.trim());
     }
     const channel = resolveModelChannel(config, model);
-    if (channel.transport === "local-runtime") return channel.enabled !== false && Boolean(channel.localModels?.some((item) => item.id === modelOptionName(model)));
     return Boolean(model.trim() && channel.baseUrl.trim() && channel.apiKey.trim());
 }
 
@@ -705,7 +698,7 @@ export function normalizeConfigSnapshot(snapshot: ConfigStoreSnapshot | undefine
     return {
         config: {
             ...config,
-            channelMode: "local" as const,
+            channelMode: "remote" as const,
             apiFormat: normalizeApiFormat(config.apiFormat),
             channels,
             models,
@@ -743,43 +736,13 @@ function normalizeSelectedModel(value: string, channels: ModelChannel[], options
 export function useEffectiveConfig() {
     const config = useConfigStore((state) => state.config);
     const customChannelsEnabled = useUserStore((state) => state.features.customChannelsEnabled);
-    const catalogState = useLocalDreaminaModelStore((state) => state.state);
-    const dreaminaModels = useLocalDreaminaModelStore((state) => state.models);
-    return useMemo(() => effectiveConfigWithDreamina(effectiveConfigForCustomChannels(config, customChannelsEnabled), catalogState, dreaminaModels), [catalogState, config, customChannelsEnabled, dreaminaModels]);
+    return effectiveConfigForCustomChannels(config, customChannelsEnabled);
 }
 
 export function effectiveConfigForCustomChannels(config: AiConfig, customChannelsEnabled: boolean): AiConfig {
     if (customChannelsEnabled) return config;
-    const channels = config.channels.filter((channel) => channel.scope === "system" || channel.transport === "local-runtime");
+    const channels = config.channels.filter((channel) => channel.scope === "system");
     return normalizeConfigSnapshot({ config: { ...config, channels } }).config;
-}
-
-export function effectiveConfigWithDreamina(config: AiConfig, catalogState: "idle" | "loading" | "ready" | "error", dreaminaModels: DreaminaLocalModel[]): AiConfig {
-    if (catalogState !== "ready" || !dreaminaModels.length) return { ...config, channelMode: "local" };
-    const channel: ModelChannel = {
-        id: "local:dreamina-cli",
-        name: "官方即梦 CLI",
-        baseUrl: "",
-        apiKey: "",
-        apiFormat: "openai",
-        models: dreaminaModels.map((item) => item.id),
-        scope: "user",
-        enabled: true,
-        transport: "local-runtime",
-        localModels: dreaminaModels,
-    };
-    const channels = [...config.channels.filter((item) => item.id !== channel.id), channel];
-    const models = modelOptionsFromChannels(channels);
-    return {
-        ...config,
-        channelMode: "local",
-        channels,
-        models,
-        imageModels: filterModelsByCapability(models, "image", channels),
-        videoModels: filterModelsByCapability(models, "video", channels),
-        textModels: filterModelsByCapability(models, "text", channels),
-        audioModels: filterModelsByCapability(models, "audio", channels),
-    };
 }
 
 export function createModelChannel(channel?: Partial<ModelChannel>): ModelChannel {
@@ -814,8 +777,6 @@ export function isChannelModelValue(value: string) {
 }
 
 export function decodeChannelModel(value: string) {
-    const local = /^local:dreamina-cli:([A-Za-z0-9][A-Za-z0-9._:-]{0,119})$/.exec(value.trim());
-    if (local) return { channelId: "local:dreamina-cli", model: local[1] };
     const index = value.indexOf(CHANNEL_MODEL_SEPARATOR);
     if (index < 0) return null;
     return { channelId: value.slice(0, index), model: value.slice(index + CHANNEL_MODEL_SEPARATOR.length) };
@@ -855,7 +816,7 @@ export function modelOptionsFromChannels(channels: ModelChannel[]) {
                 .map(normalizeRawModelName)
                 .filter(Boolean)
                 .filter((model) => channel.scope !== "system" || hasSystemModelPrice(channel, model))
-                .map((model) => (channel.transport === "local-runtime" ? `local:dreamina-cli:${model}` : encodeChannelModel(channel.id, model))),
+                .map((model) => encodeChannelModel(channel.id, model)),
         ),
     );
 }

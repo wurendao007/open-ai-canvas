@@ -103,6 +103,9 @@ func TestAdminStorageRejectsNonAdminAndInvalidFilters(t *testing.T) {
 	if _, _, _, err := normalizeAdminResourceQuery(AdminResourceQuery{Status: "unknown"}); err == nil {
 		t.Fatal("expected invalid status filter to be rejected")
 	}
+	if _, _, _, err := normalizeAdminResourceQuery(AdminResourceQuery{Page: int(^uint(0) >> 1), Limit: 100}); err == nil {
+		t.Fatal("expected overflowing page offset to be rejected")
+	}
 	if _, err := svc.AdminStorageStats(user); err == nil {
 		t.Fatal("expected non-admin stats to be rejected")
 	}

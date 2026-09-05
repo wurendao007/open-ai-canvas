@@ -10,7 +10,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion int64 = 6
+const CurrentSchemaVersion int64 = 9
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -18,6 +18,12 @@ const assetTaxonomyCandidateIdentityChecksum = "sha256:asset-taxonomy-candidate-
 const resourceUploadKeyChecksum = "sha256:resource-upload-key-v4-20260901"
 const paymentTopupChecksum = "sha256:payment-topup-v5-20260902"
 const assetLibraryFoldersChecksum = "sha256:asset-library-folders-v6-20260902"
+const onlineCanvasMCPChecksum = "sha256:online-canvas-mcp-v7-20260905"
+const resourcePlaybackChecksum = "sha256:resource-playback-v8-20260905"
+const logicalModelActiveCodeChecksum = "sha256:logical-model-active-code-v9-20260905"
+const legacyResourcePlaybackChecksum = "sha256:resource-playback-v6-20260902"
+const legacyLogicalModelActiveCodeChecksum = "sha256:logical-model-active-code-v8-20260905"
+const upstreamLineageCompatibilityChecksum = "sha256:upstream-lineage-compatibility-v9-20260905"
 
 const postgresSchemaMigrationLockID int64 = 73123910420260830
 
@@ -50,6 +56,48 @@ var schemaMigrations = []migration{
 	{version: 4, name: "resource_upload_key", checksum: resourceUploadKeyChecksum, apply: migrateSchemaV4},
 	{version: 5, name: "payment_topup", checksum: paymentTopupChecksum, apply: migrateSchemaV5},
 	{version: 6, name: "asset_library_folders", checksum: assetLibraryFoldersChecksum, apply: migrateSchemaV6},
+	{version: 7, name: "online_canvas_mcp", checksum: onlineCanvasMCPChecksum, apply: migrateSchemaV7},
+	{version: 8, name: "resource_playback_variant", checksum: resourcePlaybackChecksum, apply: migrateSchemaV8},
+	{version: 9, name: "logical_model_active_code", checksum: logicalModelActiveCodeChecksum, apply: migrateSchemaV9},
+}
+
+// migrationsForDatabase preserves the two historical orderings that have
+// shipped: this branch used v6 folders/v7 online Canvas/v8 playback/v9 model,
+// while upstream used v6 playback/v7 folders/v8 model. The compatibility plan
+// keeps the historical records immutable and uses the current v9 slot to add
+// the two features missing from the upstream lineage.
+func migrationsForDatabase(db *gorm.DB) ([]migration, error) {
+	var applied schemaMigration
+	err := db.First(&applied, "version = ?", 6).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return schemaMigrations, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("读取数据库迁移 6：%w", err)
+	}
+	if applied.Name != "resource_playback_variant" {
+		return schemaMigrations, nil
+	}
+	legacyPlayback := migration{version: 6, name: "resource_playback_variant", checksum: legacyResourcePlaybackChecksum, apply: migrateSchemaV8}
+	if err := validateMigrationRecord(applied, legacyPlayback); err != nil {
+		return nil, err
+	}
+	plan := append([]migration(nil), schemaMigrations...)
+	plan[5] = legacyPlayback
+	plan[6] = migration{version: 7, name: "asset_library_folders", checksum: assetLibraryFoldersChecksum, apply: migrateSchemaV6}
+	plan[7] = migration{version: 8, name: "logical_model_active_code", checksum: legacyLogicalModelActiveCodeChecksum, apply: migrateSchemaV9}
+	plan[8] = migration{
+		version:  9,
+		name:     "upstream_lineage_compatibility",
+		checksum: upstreamLineageCompatibilityChecksum,
+		apply: func(tx *gorm.DB) error {
+			if err := migrateSchemaV7(tx); err != nil {
+				return err
+			}
+			return migrateSchemaV8(tx)
+		},
+	}
+	return plan, nil
 }
 
 func migrateSchemaV2(tx *gorm.DB) error {
@@ -97,7 +145,7 @@ func migrateSchemaV3(tx *gorm.DB) error {
 
 func migrateSchemaV4(tx *gorm.DB) error {
 	if !tx.Migrator().HasTable(&model.Resource{}) {
-		return fmt.Errorf("资源表不存在")
+		return nil
 	}
 	if !tx.Migrator().HasColumn(&model.Resource{}, "upload_key") {
 		if err := tx.Migrator().AddColumn(&model.Resource{}, "UploadKey"); err != nil {
@@ -132,6 +180,45 @@ func migrateSchemaV6(tx *gorm.DB) error {
 	return nil
 }
 
+func migrateSchemaV7(tx *gorm.DB) error {
+	if err := tx.AutoMigrate(
+		&model.CanvasProject{},
+		&model.MCPDeviceSession{},
+		&model.MCPToken{},
+		&model.MCPAuditEvent{},
+	); err != nil {
+		return fmt.Errorf("创建在线 Canvas MCP 结构：%w", err)
+	}
+	if err := backfillCanvasStateHashes(tx); err != nil {
+		return fmt.Errorf("回填在线 Canvas MCP 画布版本：%w", err)
+	}
+	return nil
+}
+
+func migrateSchemaV8(tx *gorm.DB) error {
+	if !tx.Migrator().HasTable(&model.Resource{}) {
+		return nil
+	}
+	for _, column := range []string{"PlaybackStatus", "PlaybackObjectKey", "PlaybackError"} {
+		if !tx.Migrator().HasColumn(&model.Resource{}, column) {
+			if err := tx.Migrator().AddColumn(&model.Resource{}, column); err != nil {
+				return fmt.Errorf("增加播放副本字段 %s：%w", column, err)
+			}
+		}
+	}
+	return nil
+}
+
+func migrateSchemaV9(tx *gorm.DB) error {
+	if !tx.Migrator().HasTable(&model.LogicalModel{}) {
+		return nil
+	}
+	if err := tx.Exec("DROP INDEX IF EXISTS idx_logical_models_code").Error; err != nil {
+		return err
+	}
+	return tx.Exec("CREATE UNIQUE INDEX idx_logical_models_code ON logical_models(code) WHERE archived_at IS NULL").Error
+}
+
 func MigrateSchema(db *gorm.DB) error {
 	return db.Transaction(func(tx *gorm.DB) error {
 		if tx.Dialector.Name() == "postgres" {
@@ -142,7 +229,11 @@ func MigrateSchema(db *gorm.DB) error {
 		if err := tx.AutoMigrate(&schemaMigration{}); err != nil {
 			return fmt.Errorf("初始化数据库迁移记录：%w", err)
 		}
-		for _, item := range schemaMigrations {
+		plan, err := migrationsForDatabase(tx)
+		if err != nil {
+			return err
+		}
+		for _, item := range plan {
 			var applied schemaMigration
 			err := tx.First(&applied, "version = ?", item.version).Error
 			if err == nil {
@@ -185,7 +276,11 @@ func ReadSchemaStatus(db *gorm.DB) (SchemaStatus, error) {
 }
 
 func validateMigrationRecords(db *gorm.DB) error {
-	for _, item := range schemaMigrations {
+	plan, err := migrationsForDatabase(db)
+	if err != nil {
+		return err
+	}
+	for _, item := range plan {
 		var applied schemaMigration
 		if err := db.First(&applied, "version = ?", item.version).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {

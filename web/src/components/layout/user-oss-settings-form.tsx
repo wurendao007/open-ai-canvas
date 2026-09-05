@@ -2,7 +2,7 @@ import { App, Button, Form, Input, Select, Switch, Tag } from "antd";
 import { Cloud, ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { changesRequireOSSRetest, DEFAULT_OSS_PATH_PREFIX, getS3PresetHints, S3_PRESET_OPTIONS, type OSSConnectionTestResult, type OSSProvider, type S3Preset } from "@/lib/oss-settings";
+import { changesRequireOSSRetest, DEFAULT_OSS_PATH_PREFIX, getCDNAuthTypeOptions, getS3PresetHints, isValidCDNBaseURL, normalizeOSSConnectionTestInput, S3_PRESET_OPTIONS, supportsCDNViewerAuth, validateCDNViewerAuth, type CDNAuthType, type OSSConnectionTestResult, type OSSProvider, type S3Preset } from "@/lib/oss-settings";
 import { getUserOSSSetting, testUserOSSConnection, updateUserOSSSetting, type UserOSSSetting } from "@/services/api/resources";
 import { useUserStore } from "@/stores/use-user-store";
 
@@ -13,6 +13,8 @@ type OSSFormValues = {
     region?: string;
     endpoint?: string;
     cdnBaseUrl?: string;
+    cdnAuthType?: CDNAuthType;
+    cdnAuthKey?: string;
     bucket?: string;
     accessKeyId?: string;
     accessKeySecret?: string;
@@ -37,7 +39,10 @@ export function UserOSSSettingsForm() {
     const isQiniuKodo = provider === "qiniu";
     const isS3 = provider === "s3";
     const s3Preset = Form.useWatch("s3Preset", form) || "custom";
+    const cdnBaseUrl = (Form.useWatch("cdnBaseUrl", form) || "").trim().replace(/\/+$/, "");
+    const supportsCDNAuth = supportsCDNViewerAuth(provider) && cdnBaseUrl !== "";
     const hasCurrentProviderSecret = Boolean(setting && setting.provider === provider && setting.hasAccessKeySecret);
+    const hasCurrentCDNAuthKey = Boolean(setting && setting.provider === provider && (setting.cdnBaseUrl || "") === cdnBaseUrl && setting.hasCdnAuthKey);
     const accessKeyIdLabel = isTencentCOS ? "SecretId" : isQiniuKodo ? "AccessKey" : "AccessKey ID";
     const accessKeySecretLabel = isTencentCOS ? "SecretKey" : isQiniuKodo ? "SecretKey" : "AccessKey Secret";
 
@@ -66,6 +71,17 @@ export function UserOSSSettingsForm() {
     const save = async () => {
         const values = await form.validateFields();
         if (values.enabled && values.provider === "s3" && !setting?.allowUserS3) return message.error("平台管理员尚未允许个人 S3 兼容存储");
+        const cdnAuthType = supportsCDNAuth ? values.cdnAuthType || "" : "";
+        const cdnAuthKey = supportsCDNAuth ? values.cdnAuthKey?.trim() || "" : "";
+        if (values.enabled) {
+            const cdnAuthError = validateCDNViewerAuth({
+                provider: values.provider || "aliyun",
+                cdnBaseUrl,
+                cdnAuthType,
+                hasAuthKey: Boolean(cdnAuthKey) || hasCurrentCDNAuthKey,
+            });
+            if (cdnAuthError) return message.error(cdnAuthError);
+        }
         setSaving(true);
         try {
             const data = await updateUserOSSSetting({
@@ -74,7 +90,9 @@ export function UserOSSSettingsForm() {
                 s3Preset: values.s3Preset || "custom",
                 region: values.region?.trim() || "",
                 endpoint: values.endpoint?.trim() || "",
-                cdnBaseUrl: values.cdnBaseUrl?.trim() || "",
+                cdnBaseUrl,
+                cdnAuthType,
+                cdnAuthKey,
                 bucket: values.bucket?.trim() || "",
                 accessKeyId: values.accessKeyId?.trim() || "",
                 accessKeySecret: values.accessKeySecret?.trim() || "",
@@ -136,7 +154,7 @@ export function UserOSSSettingsForm() {
                     <Select
                         options={[{ label: "阿里云 OSS", value: "aliyun" }, { label: "腾讯云 COS", value: "tencent" }, { label: "七牛云 Kodo", value: "qiniu" }, { label: "S3 兼容存储", value: "s3", disabled: setting?.allowUserS3 === false }]}
                         onChange={(nextProvider: OSSFormValues["provider"]) => {
-                            if (nextProvider !== provider) form.setFieldsValue({ s3Preset: "custom", region: "", endpoint: "", cdnBaseUrl: "", bucket: "", accessKeyId: "", accessKeySecret: "", sessionToken: "", pathStyle: false });
+                            if (nextProvider !== provider) form.setFieldsValue({ s3Preset: "custom", region: "", endpoint: "", cdnBaseUrl: "", cdnAuthType: "", cdnAuthKey: "", bucket: "", accessKeyId: "", accessKeySecret: "", sessionToken: "", pathStyle: false });
                         }}
                     />
                 </Form.Item>
@@ -153,17 +171,36 @@ export function UserOSSSettingsForm() {
                 </Form.Item>
                 <Form.Item
                     name="cdnBaseUrl"
-                    label={isQiniuKodo ? "绑定域名（可选）" : isS3 ? "公开 CDN（可选）" : "CDN 加速域名"}
-                    extra={isTencentCOS
-                        ? "选填。上传仍走 Endpoint，下载与预览改走 CDN；私有桶需开启 CDN 私有存储桶访问。CDN URL 不附带 COS 签名，未配置 CDN URL 鉴权时链接将长期可访问。"
-                        : isQiniuKodo
-                            ? "选填。填写后浏览器直连七牛私有下载地址；留空时采用“浏览器 → 当前后端 /api/resources/:id/file → 七牛 S3 Endpoint”的代理链路，后端使用 AK/SK 读取并返回文件，无需绑定域名。"
-                            : "选填。上传仍走 Endpoint，下载与预览改走 CDN；阿里云私有 Bucket 需开启 CDN 私有 Bucket 回源。CDN URL 不附带 OSS 签名，未配置 CDN URL 鉴权时链接将长期可访问。"}
-                    rules={[{ type: "url", message: "请填写完整的 http/https CDN 加速域名" }]}
+                    label={isQiniuKodo ? "绑定域名（可选）" : isS3 ? "公网访问域名（可选）" : "公网 CDN 域名（可选）"}
+                    extra={isQiniuKodo ? "填写后使用七牛私有下载签名；留空时使用 Kodo S3 短时签名。" : isS3 ? "用于浏览器直接读取 S3 对象；该域名必须已配置公开读取或由 CDN/反向代理自行完成鉴权。留空时继续使用 S3 短时签名或同源代理。" : "配置 Viewer 鉴权后由 CDN 边缘节点分发；未配置时继续使用源站短时签名，不会返回裸 CDN 链接。"}
+                    rules={[{ validator: (_, value: string) => (!value?.trim() || isValidCDNBaseURL(value.trim()) ? Promise.resolve() : Promise.reject(new Error("请填写 HTTPS 域名根地址（内网部署可用 HTTP），不能包含路径、查询参数或认证信息"))) }]}
                     className="mb-3"
                 >
-                    <Input inputMode="url" spellCheck={false} placeholder="https://media.example.com" />
+                    <Input
+                        inputMode="url"
+                        spellCheck={false}
+                        placeholder="https://media.example.com"
+                        onChange={(event) => {
+                            const nextDomain = event.target.value.trim().replace(/\/+$/, "");
+                            if (nextDomain !== cdnBaseUrl) form.setFieldsValue({ cdnAuthType: "", cdnAuthKey: "" });
+                        }}
+                    />
                 </Form.Item>
+                {supportsCDNAuth ? (
+                    <>
+                        <Form.Item name="cdnAuthType" label="CDN Viewer 鉴权" extra="需与 CDN 控制台中该域名启用的鉴权方式一致。" className="mb-3">
+                            <Select options={getCDNAuthTypeOptions(provider)} />
+                        </Form.Item>
+                        <Form.Item
+                            name="cdnAuthKey"
+                            label={hasCurrentCDNAuthKey ? "CDN 鉴权密钥（留空保留）" : "CDN 鉴权密钥"}
+                            extra="在 CDN 控制台单独配置，与对象存储 AK/SK 无关；更换域名后必须重新填写。"
+                            className="mb-3"
+                        >
+                            <Input.Password autoComplete="new-password" spellCheck={false} placeholder={hasCurrentCDNAuthKey ? "留空保留已加密密钥" : "CDN 鉴权 Key"} />
+                        </Form.Item>
+                    </>
+                ) : null}
                 <Form.Item name="bucket" label="Bucket" className="mb-3">
                     <Input spellCheck={false} placeholder={isTencentCOS ? "my-canvas-assets-1250000000" : isQiniuKodo ? "七牛云存储空间名称" : "my-canvas-assets"} />
                 </Form.Item>
@@ -211,6 +248,8 @@ function toFormValues(setting: UserOSSSetting): OSSFormValues {
         region: setting.region,
         endpoint: setting.endpoint,
         cdnBaseUrl: setting.cdnBaseUrl,
+        cdnAuthType: setting.cdnAuthType || "",
+        cdnAuthKey: "",
         bucket: setting.bucket,
         accessKeyId: setting.accessKeyId,
         accessKeySecret: "",
@@ -221,19 +260,21 @@ function toFormValues(setting: UserOSSSetting): OSSFormValues {
 }
 
 function connectionInput(values: OSSFormValues) {
-    return {
+    return normalizeOSSConnectionTestInput({
         provider: values.provider,
         s3Preset: values.s3Preset,
         region: values.region?.trim() || "",
         endpoint: values.endpoint?.trim() || "",
         cdnBaseUrl: values.cdnBaseUrl?.trim() || "",
+        cdnAuthType: values.provider !== "s3" && supportsCDNViewerAuth(values.provider) ? values.cdnAuthType || "" : "",
+        cdnAuthKey: values.provider !== "s3" && supportsCDNViewerAuth(values.provider) ? values.cdnAuthKey?.trim() || "" : "",
         bucket: values.bucket?.trim() || "",
         accessKeyId: values.accessKeyId?.trim() || "",
         accessKeySecret: values.accessKeySecret?.trim() || "",
         sessionToken: values.sessionToken?.trim() || "",
         pathPrefix: values.pathPrefix?.trim() || DEFAULT_OSS_PATH_PREFIX,
         pathStyle: values.pathStyle === true,
-    };
+    });
 }
 
 function ConnectionTestStatus({ result, stale }: { result: OSSConnectionTestResult | null; stale: boolean }) {

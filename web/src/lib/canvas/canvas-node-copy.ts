@@ -49,6 +49,7 @@ function copyStoryboardRow(row: StoryboardRow, idMap: ReadonlyMap<string, string
 // 副本只能继承内容和用户引用，运行中任务、批次及指向源生成结果的关系必须隔离。
 export function isolateCopiedNodeMetadata(node: CanvasNodeData, idMap: ReadonlyMap<string, string>): CanvasNodeMetadata {
     const metadata = resetGenerationTaskMetadata(node.metadata, node.metadata?.content ? "success" : "idle");
+    delete (metadata as Record<string, unknown>).portraitClearance;
     delete metadata.generationBatches;
     delete metadata.batchRootId;
     delete metadata.batchChildIds;
@@ -96,14 +97,5 @@ export function isolateCopiedNodeMetadata(node: CanvasNodeData, idMap: ReadonlyM
         visibleColumns: [...node.metadata.storyboard.visibleColumns],
         referenceNodeIds: remapReferenceIds(node.metadata.storyboard.referenceNodeIds, idMap) || [],
     } : undefined;
-    if (node.type === "portrait-clearance" && metadata.portraitClearance) {
-        metadata.portraitClearance = {
-            ...metadata.portraitClearance,
-            inputBindings: metadata.portraitClearance.inputBindings.map((binding) => ({ ...binding, nodeId: idMap.get(binding.nodeId) || binding.nodeId })),
-            activeTaskId: undefined,
-            task: undefined,
-            lastResult: undefined,
-        };
-    }
     return metadata;
 }

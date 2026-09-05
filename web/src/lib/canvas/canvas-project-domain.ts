@@ -302,6 +302,13 @@ export type NodeAlignmentContext = {
     targets: Array<{ x: number[]; y: number[] }>;
 };
 
+type AlignmentSnap = { target: number; movingAnchor: number };
+
+export type NodeAlignmentSnapState = {
+    vertical?: AlignmentSnap;
+    horizontal?: AlignmentSnap;
+};
+
 export function createNodeAlignmentContext(nodes: CanvasNodeData[], initialPositions: Array<{ id: string; x: number; y: number }>): NodeAlignmentContext | null {
     const movingIds = new Set(initialPositions.map((item) => item.id));
     const initialById = new Map(initialPositions.map((item) => [item.id, item]));
@@ -326,36 +333,41 @@ export function createNodeAlignmentContext(nodes: CanvasNodeData[], initialPosit
     return { movingBounds: { left, top, right, bottom }, targets };
 }
 
-export function calculateNodeAlignment(context: NodeAlignmentContext | null, rawOffset: Position, threshold: number) {
-    if (!context) return { offset: rawOffset, guides: {} as { vertical?: number; horizontal?: number } };
+export function calculateNodeAlignment(context: NodeAlignmentContext | null, rawOffset: Position, threshold: number, previousSnap: NodeAlignmentSnapState = {}) {
+    if (!context) return { offset: rawOffset, guides: {} as { vertical?: number; horizontal?: number }, snapState: {} as NodeAlignmentSnapState };
     const { left, top, right, bottom } = context.movingBounds;
     const movingX = [left + rawOffset.x, (left + right) / 2 + rawOffset.x, right + rawOffset.x];
     const movingY = [top + rawOffset.y, (top + bottom) / 2 + rawOffset.y, bottom + rawOffset.y];
-    let bestXDelta: number | undefined;
-    let bestXGuide: number | undefined;
-    let bestYDelta: number | undefined;
-    let bestYGuide: number | undefined;
-    context.targets.forEach(({ x: targetsX, y: targetsY }) => {
-        movingX.forEach((value, anchorIndex) => {
-            const target = targetsX[anchorIndex];
+    // Keep a snapped axis until the pointer leaves a larger release band, preventing threshold-edge oscillation.
+    const releaseThreshold = threshold * 1.75;
+    const resolveAxis = (moving: number[], targetSets: number[][], rawAxisOffset: number, previous?: AlignmentSnap) => {
+        if (previous) {
+            const delta = previous.target - (previous.movingAnchor + rawAxisOffset);
+            if (Math.abs(delta) <= releaseThreshold) return { delta, guide: previous.target, snap: previous };
+        }
+
+        let bestDelta: number | undefined;
+        let bestGuide: number | undefined;
+        let bestAnchor: number | undefined;
+        targetSets.forEach((targets) => targets.forEach((target, anchorIndex) => {
+            const value = moving[anchorIndex];
             const delta = target - value;
-            if (Math.abs(delta) <= threshold && (bestXDelta === undefined || Math.abs(delta) < Math.abs(bestXDelta))) {
-                bestXDelta = delta;
-                bestXGuide = target;
+            if (Math.abs(delta) <= threshold && (bestDelta === undefined || Math.abs(delta) < Math.abs(bestDelta))) {
+                bestDelta = delta;
+                bestGuide = target;
+                bestAnchor = moving[anchorIndex] - rawAxisOffset;
             }
-        });
-        movingY.forEach((value, anchorIndex) => {
-            const target = targetsY[anchorIndex];
-            const delta = target - value;
-            if (Math.abs(delta) <= threshold && (bestYDelta === undefined || Math.abs(delta) < Math.abs(bestYDelta))) {
-                bestYDelta = delta;
-                bestYGuide = target;
-            }
-        });
-    });
+        }));
+        return bestDelta === undefined || bestGuide === undefined || bestAnchor === undefined
+            ? { delta: 0, guide: undefined, snap: undefined }
+            : { delta: bestDelta, guide: bestGuide, snap: { target: bestGuide, movingAnchor: bestAnchor } };
+    };
+    const x = resolveAxis(movingX, context.targets.map(({ x: targetsX }) => targetsX), rawOffset.x, previousSnap.vertical);
+    const y = resolveAxis(movingY, context.targets.map(({ y: targetsY }) => targetsY), rawOffset.y, previousSnap.horizontal);
     return {
-        offset: { x: rawOffset.x + (bestXDelta || 0), y: rawOffset.y + (bestYDelta || 0) },
-        guides: { vertical: bestXGuide, horizontal: bestYGuide },
+        offset: { x: rawOffset.x + x.delta, y: rawOffset.y + y.delta },
+        guides: { vertical: x.guide, horizontal: y.guide },
+        snapState: { vertical: x.snap, horizontal: y.snap },
     };
 }
 

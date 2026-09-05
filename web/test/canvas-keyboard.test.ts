@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 
+import { readSourceText } from "./helpers/read-source";
 import { hasCanvasTextSelection } from "../src/pages/canvas/use-canvas-keyboard";
 
 test("Canvas copy shortcut yields to a real browser text selection", () => {
@@ -11,7 +12,7 @@ test("Canvas copy shortcut yields to a real browser text selection", () => {
 });
 
 test("Canvas keyboard keeps node copy as the fallback when no text is selected", async () => {
-    const source = await Bun.file(new URL("../src/pages/canvas/use-canvas-keyboard.ts", import.meta.url)).text();
+    const source = await readSourceText(new URL("../src/pages/canvas/use-canvas-keyboard.ts", import.meta.url));
     expect(source).toContain("if (hasCanvasTextSelection(window.getSelection())) return;");
     expect(source).toContain("event.preventDefault();\n                copySelectedNodes();");
 });

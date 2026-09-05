@@ -17,6 +17,7 @@ type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 export const CanvasFrameNode = React.memo(function CanvasFrameNode({
     data,
     dragOffset,
+    isDragging,
     childNodes,
     scale,
     isSelected,
@@ -34,6 +35,7 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
 }: {
     data: CanvasNodeData;
     dragOffset?: Position;
+    isDragging?: boolean;
     childNodes: CanvasNodeData[];
     scale: number;
     isSelected: boolean;
@@ -148,6 +150,7 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
         window.addEventListener("mouseup", handleResizeUp);
     };
 
+    const dragActive = isDragging ?? Boolean(dragOffset);
     const active = isSelected || isDropTarget;
     const linkedFolder = Boolean(data.metadata?.folder?.assetFolderId);
 
@@ -157,8 +160,15 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
             role={folder && collapsed ? "group" : undefined}
             tabIndex={folder && collapsed ? 0 : undefined}
             aria-label={folder && collapsed ? `${data.title}，文件夹，${childNodes.length} 项内容。按回车打开` : undefined}
-            className={`absolute z-0 select-none${folder && collapsed ? " canvas-folder-node" : ""} ${dragOffset ? "cursor-grabbing" : "cursor-default"}`}
-            style={{ transform: `translate(${data.position.x + (dragOffset?.x || 0)}px, ${data.position.y + (dragOffset?.y || 0)}px)`, width: data.width, height: data.height, contain: "layout style" }}
+            className={`absolute z-0 select-none${folder && collapsed ? " canvas-folder-node" : ""} ${dragActive ? "cursor-grabbing" : "cursor-default"}`}
+            style={{
+                // The main canvas applies transient movement through the CSS compositor.
+                // Keep dragOffset for shared/read-only canvases that do not use that path.
+                transform: `translate(${data.position.x + (dragOffset?.x || 0)}px, ${data.position.y + (dragOffset?.y || 0)}px)`,
+                width: data.width,
+                height: data.height,
+                contain: "layout style",
+            }}
             onMouseDown={(event) => onMouseDown(event, data.id)}
             onDoubleClick={(event) => {
                 if (!collapsed || (event.target instanceof Element && event.target.closest("button,input"))) return;
@@ -180,7 +190,7 @@ export const CanvasFrameNode = React.memo(function CanvasFrameNode({
                 containerClassName="h-full w-full"
                 className={folder && collapsed ? "canvas-folder-shell overflow-visible" : `canvas-frame-shell overflow-hidden rounded-[var(--dock-radius)] border${folder ? " canvas-folder-expanded" : ""}`}
                 disabled
-                data-canvas-frame-hover-locked={!collapsed || editing || Boolean(dragOffset) || scale < 0.32 ? "true" : "false"}
+                data-canvas-frame-hover-locked={!collapsed || editing || dragActive || scale < 0.32 ? "true" : "false"}
                 style={{
                     background: folder && collapsed ? "transparent" : active ? theme.frame.activeFill : theme.frame.fill,
                     borderColor: folder && collapsed ? "transparent" : active ? theme.frame.activeStroke : theme.frame.stroke,

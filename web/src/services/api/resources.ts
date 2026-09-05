@@ -1,7 +1,7 @@
 import { getActiveUserScope } from "@/lib/user-scope";
 import axios from "axios";
 import { apiBaseURL, apiClient, request, type BackendEnvelope } from "@/services/api/request";
-import type { OSSConnectionTestInput, OSSConnectionTestResult, OSSProvider, S3Preset } from "@/lib/oss-settings";
+import type { CDNAuthType, OSSConnectionTestInput, OSSConnectionTestResult, OSSProvider, S3Preset } from "@/lib/oss-settings";
 
 export type RemoteResource = {
     id: string;
@@ -18,6 +18,9 @@ export type RemoteResource = {
     width?: number;
     height?: number;
     durationMs?: number;
+    playbackStatus?: string;
+    playbackObjectKey?: string;
+    playbackError?: string;
     etag?: string;
     error?: string;
     createdAt: string;
@@ -30,10 +33,14 @@ export type UserOSSSetting = {
     enabled: boolean;
     storageMode: ResourceStorageMode;
     provider: OSSProvider;
+    configured: boolean;
+    effectiveProvider: OSSProvider | "";
     s3Preset: S3Preset;
     region: string;
     endpoint: string;
     cdnBaseUrl: string;
+    cdnAuthType: CDNAuthType;
+    hasCdnAuthKey: boolean;
     bucket: string;
     accessKeyId: string;
     hasAccessKeySecret: boolean;
@@ -50,9 +57,10 @@ export type UserOSSSetting = {
     updatedAt?: string;
 };
 
-export type UserOSSSettingInput = Pick<UserOSSSetting, "enabled" | "provider" | "s3Preset" | "region" | "endpoint" | "cdnBaseUrl" | "bucket" | "accessKeyId" | "pathPrefix" | "pathStyle"> & {
+export type UserOSSSettingInput = Pick<UserOSSSetting, "enabled" | "provider" | "s3Preset" | "region" | "endpoint" | "cdnBaseUrl" | "cdnAuthType" | "bucket" | "accessKeyId" | "pathPrefix" | "pathStyle"> & {
     accessKeySecret?: string;
     sessionToken?: string;
+    cdnAuthKey?: string;
 };
 
 export type AccountFileStorageUsage = {
@@ -65,13 +73,17 @@ export type ArkPrivateAssetSync = {
     status: "active" | string;
 };
 
-type ResourceUploadMeta = {
+export type ResourceUploadMeta = {
     width?: number;
     height?: number;
     durationMs?: number;
     fileName?: string;
     idempotencyKey?: string;
 };
+
+export function playbackVariantUrl(id: string) {
+    return `${resourceFileUrl(id)}?variant=playback`;
+}
 
 const api = apiClient;
 const resourceCache = new Map<string, RemoteResource>();
@@ -101,6 +113,9 @@ export function getUserOSSSetting() {
 export async function updateUserOSSSetting(input: UserOSSSettingInput) {
     const scope = getActiveUserScope();
     const data = await request<{ setting: UserOSSSetting }>(api.patch("/settings/oss", input));
+    // A public S3 domain can be cached indefinitely. Drop the in-memory URL
+    // map when storage settings change so a new domain takes effect now.
+    clearResourceDirectURLCaches();
     cacheResourceStorageMode(normalizeResourceStorageMode(data.setting.storageMode), scope);
     return data;
 }
@@ -192,17 +207,76 @@ export function resourceIdFromFileUrl(rawURL?: string) {
     }
 }
 
-export async function uploadResourceFile(file: Blob, kind: "image" | "video" | "audio" | "file", meta?: ResourceUploadMeta) {
-    const formData = new FormData();
+const CHUNK_UPLOAD_THRESHOLD = 50 << 20;
+const CHUNK_UPLOAD_RETRIES = 2;
+
+export async function uploadResourceFile(
+    file: Blob,
+    kind: "image" | "video" | "audio" | "file",
+    meta?: ResourceUploadMeta,
+    onProgress?: (uploadedBytes: number, totalBytes: number) => void,
+): Promise<RemoteResource> {
     const name = meta?.fileName || (file instanceof File ? file.name : `${kind}.${extensionFromMime(file.type, kind)}`);
+    if (file.size > CHUNK_UPLOAD_THRESHOLD) {
+        const resource = await uploadFileInChunks(file, name, kind, meta, onProgress);
+        resourceCache.set(resourceCacheKey(resource.id), resource);
+        return resource;
+    }
+    const formData = new FormData();
     formData.append("kind", kind);
     formData.append("file", file, name);
     if (meta?.width) formData.append("width", String(Math.round(meta.width)));
     if (meta?.height) formData.append("height", String(Math.round(meta.height)));
     if (meta?.durationMs) formData.append("durationMs", String(Math.round(meta.durationMs)));
-    const data = await request<{ resource: RemoteResource }>(api.post("/resources", formData, uploadRequestConfig(meta?.idempotencyKey)));
-    resourceCache.set(resourceCacheKey(data.resource.id), data.resource);
-    return data.resource;
+    try {
+        const data = await request<{ resource: RemoteResource }>(api.post("/resources", formData, uploadRequestConfig(meta?.idempotencyKey)));
+        resourceCache.set(resourceCacheKey(data.resource.id), data.resource);
+        return data.resource;
+    } catch (error) {
+        throw normalizeUploadError(error);
+    }
+}
+
+async function uploadFileInChunks(file: Blob, name: string, kind: "image" | "video" | "audio" | "file", meta: ResourceUploadMeta | undefined, onProgress?: (uploadedBytes: number, totalBytes: number) => void) {
+    for (let attempt = 0; attempt < CHUNK_UPLOAD_RETRIES; attempt++) {
+        try {
+            return await runChunkedUpload(file, name, kind, meta, onProgress);
+        } catch (error) {
+            if (attempt === CHUNK_UPLOAD_RETRIES - 1) throw normalizeUploadError(error);
+        }
+    }
+    throw new Error("上传失败");
+}
+
+async function runChunkedUpload(file: Blob, name: string, kind: "image" | "video" | "audio" | "file", meta: ResourceUploadMeta | undefined, onProgress?: (uploadedBytes: number, totalBytes: number) => void) {
+    const session = await request<{ uploadId: string; chunkSize: number; chunkCount: number }>(
+        api.post(
+            "/resources/uploads",
+            { fileName: name, kind, size: file.size, width: meta?.width, height: meta?.height, durationMs: meta?.durationMs, idempotencyKey: meta?.idempotencyKey?.trim() || undefined },
+            uploadRequestConfig(meta?.idempotencyKey),
+        ),
+    );
+    for (let index = 0; index < session.chunkCount; index++) {
+        const start = index * session.chunkSize;
+        const end = Math.min(file.size, start + session.chunkSize);
+        const blob = file.slice(start, end);
+        await request<{ index: number }>(api.put(`/resources/uploads/${encodeURIComponent(session.uploadId)}/chunks/${index}`, blob, { headers: { "Content-Type": "application/octet-stream" } }));
+        onProgress?.(end, file.size);
+    }
+    const complete = await request<{ resource: RemoteResource }>(api.post(`/resources/uploads/${encodeURIComponent(session.uploadId)}/complete`));
+    return complete.resource;
+}
+
+function normalizeUploadError(error: unknown): Error {
+    if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+        const payload = error.response?.data as { msg?: string } | undefined;
+        const message = payload?.msg || "";
+        if (status === 400 && /body too large|MaxBytes/i.test(message)) return new Error("文件过大，请使用分片上传或稍后重试");
+        if (message) return new Error(message);
+        if (status === 413) return new Error("文件过大，无法上传");
+    }
+    return error instanceof Error ? error : new Error("上传失败");
 }
 
 export async function importResourceFromUrl(url: string, kind: "image" | "video" | "audio" | "file", meta?: Omit<ResourceUploadMeta, "fileName">) {
@@ -237,6 +311,17 @@ export function getResource(id: string): Promise<RemoteResource> {
     return task;
 }
 
+// Bypass the read cache while polling processing resources, then make the
+// latest server state authoritative for subsequent consumers.
+export function refreshResource(id: string): Promise<RemoteResource> {
+    const cacheKey = resourceCacheKey(id);
+    return request<{ resource: RemoteResource }>(api.get(`/resources/${encodeURIComponent(id)}`)).then((data) => {
+        resourceCache.set(cacheKey, data.resource);
+        missingResourceIds.delete(cacheKey);
+        return data.resource;
+    });
+}
+
 export async function getResourceOSSUrl(storageKey?: string) {
     const id = resourceIdFromStorageKey(storageKey);
     if (!id) throw new Error("当前媒体尚未上传到后端资源存储");
@@ -251,12 +336,11 @@ export async function getResourceOSSUrl(storageKey?: string) {
 }
 
 /**
- * Returns a short-lived URL for the object that backs a resource.
+ * Returns the browser URL for the object that backs a resource.
  *
- * The endpoint performs the ownership check server-side. The returned URL is
- * cached briefly to avoid repeating an authenticated API round-trip while a
- * page renders multiple thumbnails for the same resource. The cache lifetime
- * stays below the backend's five-minute signing lifetime.
+ * The endpoint performs the ownership check server-side. Signed provider URLs
+ * are cached briefly, while an explicitly configured public S3 domain is
+ * marked stable by the backend and can be reused without a forced refresh.
  */
 export async function getResourceDirectUrl(storageKey?: string, options?: { forceRefresh?: boolean }) {
     const id = resourceIdFromStorageKey(storageKey);
@@ -273,11 +357,11 @@ export async function getResourceDirectUrl(storageKey?: string, options?: { forc
     if (pending && !options?.forceRefresh) return pending;
     let task: Promise<string>;
     task = requestDirectResourceUrl(id)
-        .then((url) => {
+        .then(({ url, stable }) => {
             if (generation !== resourceCacheGeneration) throw new Error("资源账号已切换");
             if (resourceDirectURLRequests.get(cacheKey) !== task) return url;
             deleteResourceDirectURLCache(cacheKey);
-            const expiresAt = Date.now() + RESOURCE_DIRECT_URL_TTL_MS;
+            const expiresAt = stable ? Number.POSITIVE_INFINITY : Date.now() + RESOURCE_DIRECT_URL_TTL_MS;
             const reverseKey = resourceDirectURLReverseKey(url, scope);
             resourceDirectURLCache.set(cacheKey, { url, expiresAt, reverseKey });
             resourceDirectURLIds.set(reverseKey, { id, cacheKey, expiresAt });
@@ -291,12 +375,12 @@ export async function getResourceDirectUrl(storageKey?: string, options?: { forc
     return task;
 }
 
-async function requestDirectResourceUrl(id: string) {
+async function requestDirectResourceUrl(id: string, download = false): Promise<{ url: string; stable: boolean }> {
     try {
-        const data = await request<{ url: string; proxy?: boolean }>(api.get(`/resources/${encodeURIComponent(id)}/direct-url`));
-        if (data.proxy) return resourceFileUrl(id);
+        const data = await request<{ url: string; proxy?: boolean; stable?: boolean }>(api.get(`/resources/${encodeURIComponent(id)}/direct-url`, download ? { params: { download: 1 } } : undefined));
+        if (data.proxy) return { url: download ? resourceDownloadUrl(id) : resourceFileUrl(id), stable: false };
         if (!data.url) throw new Error("后端未返回对象存储地址");
-        return data.url;
+        return { url: data.url, stable: data.stable === true };
     } catch (error) {
         if (axios.isAxiosError<BackendEnvelope<unknown>>(error)) throw new Error(error.response?.data.msg || error.message || "获取对象存储地址失败");
         throw error;
@@ -337,9 +421,8 @@ export function resourceFileUrl(id: string) {
 }
 
 export function resourceDownloadUrl(id: string) {
-    // The backend redirects public S3/Rainyun resources to a short-lived
-    // provider URL with response-content-disposition=attachment. Private or
-    // unsupported providers still use the authenticated stream server-side.
+    // Legacy/same-origin download route. Provider-backed downloads resolve this
+    // ID through /direct-url?download=1 before the browser requests the object.
     return `${resourceFileUrl(id)}?download=1`;
 }
 
@@ -353,6 +436,59 @@ export function resourceDownloadUrlFromUrl(url: string, storageKey?: string) {
     const resourceId = resourceIdFromStorageKey(storageKey) || resourceIdFromFileUrl(url) || resourceDirectResourceId(url);
     if (!resourceId) return url;
     return resourceDownloadUrl(resourceId);
+}
+
+async function resolveResourceDownloadTarget(url: string) {
+    const resourceId = resourceIdFromFileUrl(url) || resourceDirectResourceId(url);
+    if (!resourceId) return url;
+    return (await requestDirectResourceUrl(resourceId, true)).url;
+}
+
+/**
+ * Starts an authenticated browser download and keeps failures inside the SPA.
+ *
+ * Provider-backed resources first resolve to a signed attachment URL through a
+ * JSON API, so the object downloads directly without a redirect request in the
+ * network panel. Local/proxied resources retain the authenticated file route.
+ */
+export async function startResourceDownload(url: string, fileName?: string) {
+    const target = await resolveResourceDownloadTarget(url);
+    if (typeof document === "undefined") return;
+    if (isCrossOriginResourceURL(target)) {
+        const response = await fetch(target, { credentials: "omit" });
+        if (!response.ok) throw new Error(`资源下载失败（HTTP ${response.status}）`);
+        const blob = await response.blob();
+        const objectURL = URL.createObjectURL(blob);
+        try {
+            triggerResourceDownload(objectURL, fileName);
+        } finally {
+            URL.revokeObjectURL(objectURL);
+        }
+        return;
+    }
+    triggerResourceDownload(target, fileName);
+}
+
+function triggerResourceDownload(target: string, fileName?: string) {
+    const anchor = document.createElement("a");
+    anchor.href = target;
+    anchor.rel = "noopener";
+    anchor.download = fileName || "";
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+}
+
+function isCrossOriginResourceURL(value: string) {
+    if (!/^https?:\/\//i.test(value)) return false;
+    const configuredOrigin = typeof globalThis.location?.origin === "string" ? globalThis.location.origin : "";
+    if (!configuredOrigin) return true;
+    try {
+        return new URL(value).origin !== configuredOrigin;
+    } catch {
+        return true;
+    }
 }
 
 function resourceDirectResourceId(url: string) {
@@ -376,11 +512,15 @@ export function clearResourceClientCaches() {
     resourceCacheGeneration += 1;
     resourceCache.clear();
     missingResourceIds.clear();
+    clearResourceDirectURLCaches();
+    resourceStorageModeCache = null;
+    resourceStorageModeRequest = null;
+}
+
+function clearResourceDirectURLCaches() {
     resourceDirectURLRequests.clear();
     resourceDirectURLCache.clear();
     resourceDirectURLIds.clear();
-    resourceStorageModeCache = null;
-    resourceStorageModeRequest = null;
 }
 
 function resourceProxyFileUrl(id: string) {
@@ -411,7 +551,8 @@ export async function getResourceBlob(storageKey: string, options: { proxyFallba
             const blob = await response.blob();
             return generation === resourceCacheGeneration && scope === getActiveUserScope() ? blob : null;
         }
-    } catch {
+    } catch (error) {
+        if (isAbortError(error, options.signal)) throw error;
         // Provider CORS may be disabled even though <img>/<video> can follow a
         // redirect. The authenticated same-origin proxy remains an explicit
         // fallback for Blob-only consumers such as IndexedDB caching.
@@ -424,6 +565,10 @@ export async function getResourceBlob(storageKey: string, options: { proxyFallba
     if (!response.ok) return null;
     const blob = await response.blob();
     return generation === resourceCacheGeneration && scope === getActiveUserScope() ? blob : null;
+}
+
+function isAbortError(error: unknown, signal?: AbortSignal) {
+    return signal?.aborted === true || (typeof error === "object" && error !== null && "name" in error && (error as { name?: unknown }).name === "AbortError");
 }
 
 function extensionFromMime(mimeType: string, kind: string) {

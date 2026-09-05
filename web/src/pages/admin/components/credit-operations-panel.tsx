@@ -470,6 +470,7 @@ export default function CreditOperationsPanel({ users, activeOperation, onOperat
                     if (!savingPolicy) onOperationChange(null);
                 }}
                 rootClassName="admin-drawer admin-credit-drawer"
+                forceRender
                 destroyOnHidden
                 mask={{ closable: !savingPolicy }}
                 keyboard={!savingPolicy}
@@ -591,6 +592,7 @@ export default function CreditOperationsPanel({ users, activeOperation, onOperat
                     onOperationChange(null);
                 }}
                 rootClassName="admin-drawer admin-credit-drawer"
+                forceRender
                 destroyOnHidden
                 mask={{ closable: !adjusting && !pendingAdjustment }}
                 keyboard={!adjusting && !pendingAdjustment}
@@ -660,6 +662,7 @@ export default function CreditOperationsPanel({ users, activeOperation, onOperat
                 closable={!adjusting}
                 destroyOnHidden
                 rootClassName="admin-modal-root"
+                forceRender
                 okButtonProps={{ danger: Boolean(pendingAdjustment && pendingAdjustment.amount < 0) }}
             >
                 {pendingAdjustment ? (
@@ -714,6 +717,7 @@ export default function CreditOperationsPanel({ users, activeOperation, onOperat
                 closable={!resolving}
                 destroyOnHidden
                 rootClassName="admin-modal-root"
+                forceRender
                 okButtonProps={{ danger: resolutionTarget?.action === "refund" }}
             >
                 {resolutionTarget ? (

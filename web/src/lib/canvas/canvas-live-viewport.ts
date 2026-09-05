@@ -11,9 +11,32 @@ export type CanvasNodeDragPreview = {
     nodeIds: ReadonlySet<string>;
 };
 
+export type CanvasNodeSelectionPreview = {
+    includeNodeIds: ReadonlySet<string>;
+    removeNodeIds: ReadonlySet<string>;
+};
+
+const nodeSelectionPreviewDomStates = new WeakMap<HTMLDivElement, { elementsById: Map<string, HTMLElement>; previousStates: Map<string, "include" | "remove"> }>();
+
+export function applyCanvasNodeSelectionPreview(container: HTMLDivElement | null, preview: CanvasNodeSelectionPreview | null) {
+    if (!container) return;
+    let state = nodeSelectionPreviewDomStates.get(container);
+    if (!state) { state = { elementsById: new Map(), previousStates: new Map() }; nodeSelectionPreviewDomStates.set(container, state); }
+    const next = new Map<string, "include" | "remove">();
+    preview?.includeNodeIds.forEach((id) => next.set(id, "include"));
+    preview?.removeNodeIds.forEach((id) => next.set(id, "remove"));
+    if (state.elementsById.size === 0 && next.size) container.querySelectorAll<HTMLElement>("[data-node-id]").forEach((el) => { if (el.dataset.nodeId) state?.elementsById.set(el.dataset.nodeId, el); });
+    state.previousStates.forEach((_value, id) => { if (next.has(id)) return; state?.elementsById.get(id)?.removeAttribute("data-canvas-selection-preview"); });
+    next.forEach((value, id) => { const el = state?.elementsById.get(id); if (el && state?.previousStates.get(id) !== value) el.dataset.canvasSelectionPreview = value; });
+    state.previousStates = next;
+    if (!preview) state.elementsById.clear();
+}
+
 type NodeDragPreviewDomState = {
     elementsById: Map<string, HTMLElement>;
     previousIds: Set<string>;
+    preview: CanvasNodeDragPreview | null;
+    observer?: MutationObserver;
 };
 
 const nodeDragPreviewDomStates = new WeakMap<HTMLDivElement, NodeDragPreviewDomState>();
@@ -94,15 +117,41 @@ export function applyCanvasNodeDragPreview(container: HTMLDivElement | null, pre
 
     let state = nodeDragPreviewDomStates.get(container);
     if (!state) {
-        state = { elementsById: new Map(), previousIds: new Set() };
+        state = { elementsById: new Map(), previousIds: new Set(), preview: null };
         nodeDragPreviewDomStates.set(container, state);
+        state.observer = new MutationObserver((records) => {
+            const active = state?.preview;
+            if (!active) return;
+            const syncElement = (element: HTMLElement) => {
+                const nodeId = element.dataset.nodeId;
+                if (!nodeId) return;
+                state?.elementsById.set(nodeId, element);
+                if (!active.nodeIds.has(nodeId)) return;
+                const nextTranslate = `${active.x}px ${active.y}px`;
+                if (element.style.getPropertyValue("translate") !== nextTranslate) element.style.setProperty("translate", nextTranslate);
+            };
+            records.forEach((record) => {
+                if (record.type === "attributes" && record.target instanceof HTMLElement) {
+                    syncElement(record.target);
+                    return;
+                }
+                record.addedNodes.forEach((node) => {
+                    if (!(node instanceof HTMLElement)) return;
+                    syncElement(node);
+                    node.querySelectorAll<HTMLElement>("[data-node-id]").forEach(syncElement);
+                });
+            });
+        });
+        state.observer.observe(container, { attributes: true, attributeFilter: ["style"], childList: true, subtree: true });
     }
 
+    state.preview = preview;
+    const nextIds = preview?.nodeIds || null;
+    // Update active nodes in place; only departing nodes need translation cleanup.
     for (const nodeId of state.previousIds) {
-        state.elementsById.get(nodeId)?.style.removeProperty("translate");
+        if (!nextIds?.has(nodeId)) state.elementsById.get(nodeId)?.style.removeProperty("translate");
     }
 
-    state.previousIds.clear();
     if (preview) {
         // Build the lookup once per drag session. A single DOM scan is much
         // cheaper than one selector query per selected node on every frame.
@@ -116,9 +165,10 @@ export function applyCanvasNodeDragPreview(container: HTMLDivElement | null, pre
             const element = state.elementsById.get(nodeId);
             if (!element || !element.isConnected) continue;
             element.style.setProperty("translate", `${preview.x}px ${preview.y}px`);
-            state.previousIds.add(nodeId);
         }
+        state.previousIds = new Set(preview.nodeIds);
     } else {
+        state.previousIds.clear();
         state.elementsById.clear();
     }
 

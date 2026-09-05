@@ -15,7 +15,6 @@ import { disposeDirectorAdoptionFailure, disposeDirectorHelper, disposeDirectorM
 import { DIRECTOR_DEFAULT_ACTOR_URL, directorPoseBoneDeltas, directorTransformPathLength, finiteDirectorTransformKeyframes, interpolateDirectorTransform } from "@/lib/canvas/director/director-scene";
 import { DIRECTOR_DEFAULT_VIEW_MODE, directorViewFramingKey, resolveDirectorEffectiveViewport, resolveDirectorOrthographicFraming, resolveDirectorOrthographicFrustum, resolveDirectorViewFraming, type DirectorOrthographicFraming, type DirectorViewFraming, type DirectorViewMode } from "@/lib/canvas/director/director-view-modes";
 import { DirectorViewToolbar } from "@/components/canvas/director/director-view-toolbar";
-import { resourceFallbackUrl, resourceIdFromFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
 import { resolveMediaUrl } from "@/services/file-storage";
 import type { DirectorHumanoidBone, DirectorLight, DirectorObject, DirectorQuat, DirectorRenderMode, DirectorRig, DirectorScene, DirectorTransform, DirectorVec3 } from "@/types/director";
 
@@ -743,9 +742,7 @@ function DirectorModel({ object, selected, selectedBone, playhead, onSelectBone,
             setLoadPhase("error");
         };
         const loader = new GLTFLoader();
-        const resourceId = resourceIdFromStorageKey(object.storageKey) || resourceIdFromFileUrl(modelUrl);
-        const safeModelUrl = resourceId ? resourceFallbackUrl(resourceId, modelUrl) : modelUrl;
-        void resolveMediaUrl(object.storageKey, safeModelUrl)
+        void resolveMediaUrl(object.storageKey, modelUrl)
             .then((url) => {
                 // 解析完成时已失效：不再发起无意义的网络加载。
                 if (!active || generation !== loadRef.current.generation) return;

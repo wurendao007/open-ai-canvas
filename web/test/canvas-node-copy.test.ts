@@ -29,6 +29,22 @@ describe("canvas node copy title", () => {
 });
 
 describe("canvas generation copy metadata", () => {
+    test("复制旧节点 metadata 时不带出已退役的 portraitClearance 字段", () => {
+        const source = {
+            id: "source",
+            type: CanvasNodeType.Image,
+            title: "角色",
+            position: { x: 0, y: 0 },
+            width: 340,
+            height: 240,
+            metadata: { content: "image-url", portraitClearance: { status: "pending" } },
+        } as CanvasNodeData;
+
+        const metadata = isolateCopiedNodeMetadata(source, new Map([[source.id, "copy"]]));
+
+        expect(metadata).not.toHaveProperty("portraitClearance");
+    });
+
     test("媒体副本保留提示词与参考字段，并明确原地回填生成结果", () => {
         const source: CanvasNodeData = {
             id: "source",

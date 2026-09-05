@@ -17,8 +17,6 @@ export type CanvasNodeActionContextValue = {
     updateMediaNode?: (nodeId: string, update: (node: CanvasNodeData) => CanvasNodeData) => void;
     /** 改节点宽高；图片首次量到真实尺寸后按比例校正节点用。 */
     resizeNode?: (nodeId: string, size: { width: number; height: number }) => void;
-    /** 打开节点级肖像排查工作台；任务生命周期由画布页面持有。 */
-    openPortraitClearance?: (node: CanvasNodeData) => void;
     /** 打开节点级 AI 审美批改报告。 */
     openArtCritique?: (node: CanvasNodeData) => void;
 };

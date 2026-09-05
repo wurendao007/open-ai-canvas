@@ -7,6 +7,7 @@ import type { CanvasSnapshot } from "../src/types.js";
 test("CLI help exposes only remote commands", () => {
     let text = "";
     printHelp({ write(value: string) { text += value; return true; } });
+    assert.match(text, /kraftreel/);
     assert.match(text, /login web/);
     assert.match(text, /project use/);
     assert.match(text, /mcp/);

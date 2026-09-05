@@ -26,8 +26,11 @@ const MIME_EXTENSIONS: Record<string, string> = {
 const CONTENT_EXTENSIONS = new Set(["png", "jpg", "jpeg", "webp", "gif", "svg", "mp4", "webm", "mov", "ogv", "ogg", "mpeg", "mpg", "mp3", "m4a", "wav", "aac", "flac", "opus"]);
 
 export function buildCanvasMediaDownloadFileName(canvasTitle: string, node: CanvasNodeData, now = new Date()) {
-    const canvasName = safeFileNamePart(canvasTitle, "未命名画布");
     const nodeName = safeFileNamePart(node.title, defaultNodeName(node.type));
+    // Uploaded assets keep their original file name as the node title. Do not
+    // wrap that name in a canvas/date prefix or append a second extension.
+    if (hasKnownMediaExtension(nodeName)) return nodeName;
+    const canvasName = safeFileNamePart(canvasTitle, "未命名画布");
     return `${canvasName}_${nodeName}_${formatDownloadDate(now)}.${canvasMediaFileExtension(node)}`;
 }
 
@@ -53,6 +56,11 @@ function extensionFromContent(content?: string) {
     if (extension === "jpeg") return "jpg";
     if (extension === "mpg") return "mpeg";
     return extension;
+}
+
+function hasKnownMediaExtension(value: string) {
+    const extension = value.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
+    return Boolean(extension && CONTENT_EXTENSIONS.has(extension));
 }
 
 function safeFileNamePart(value: string, fallback: string) {

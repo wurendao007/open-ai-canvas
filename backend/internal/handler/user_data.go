@@ -17,6 +17,27 @@ import (
 )
 
 func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
+	r.POST("/assets/batch", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 16<<10)
+		var req struct {
+			IDs []string `json:"ids"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		assets, err := svc.UserAssetsByIDs(user.ID, req.IDs)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"assets": assets})
+	})
 	r.GET("/settings/prompt-templates", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {
@@ -121,7 +142,11 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
-		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "200"))
+		limit, err := resourceListLimit(c)
+		if err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
 		resources, err := svc.Resources(user.ID, limit)
 		if err != nil {
 			failService(c, err)
@@ -172,6 +197,11 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, (policy.Resource.ResourceUploadMB<<20)+(1<<20))
 		file, err := c.FormFile("file")
 		if err != nil {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				fail(c, http.StatusBadRequest, fmt.Errorf("单个上传文件必须小于 %dMB", policy.Resource.ResourceUploadMB))
+				return
+			}
 			fail(c, http.StatusBadRequest, err)
 			return
 		}
@@ -222,7 +252,7 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		resource, err := svc.Resource(user.ID, c.Param("id"))
 		if err != nil {
-			fail(c, http.StatusNotFound, err)
+			failService(c, err)
 			return
 		}
 		ok(c, gin.H{"resource": resource})
@@ -235,7 +265,7 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		resource, err := svc.Resource(user.ID, c.Param("id"))
 		if err != nil {
-			fail(c, http.StatusNotFound, err)
+			failService(c, err)
 			return
 		}
 		ossURL, err := svc.DirectResourceURL(user.ID, resource.ID)
@@ -254,16 +284,24 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
-		directURL, proxy, err := svc.BrowserResourceURL(user.ID, c.Param("id"))
+		download := c.Query("download") == "1"
+		var directURL string
+		var proxy bool
+		var stable bool
+		if download {
+			directURL, proxy, stable, err = svc.BrowserResourceDownloadURLWithCachePolicy(user.ID, c.Param("id"))
+		} else {
+			directURL, proxy, stable, err = svc.BrowserResourceURLWithCachePolicy(user.ID, c.Param("id"))
+		}
 		if err != nil {
 			failService(c, err)
 			return
 		}
-		// 直达地址只在短时有效；浏览器缓存的是随后返回的对象 Blob，
-		// 不缓存这个带签名的接口响应。
+		// 签名地址只在短时有效；显式配置的公网 S3 域名由 stable 标记，
+		// 浏览器可以复用该地址。接口响应本身仍禁止缓存，避免鉴权结果跨账号复用。
 		c.Header("Cache-Control", "private, no-store")
 		c.Header("Referrer-Policy", "no-referrer")
-		ok(c, gin.H{"url": directURL, "proxy": proxy})
+		ok(c, gin.H{"url": directURL, "proxy": proxy, "stable": stable})
 	})
 	r.GET("/resources/:id/file", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
@@ -290,24 +328,41 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		resource := delivery.Resource
 		etag := resourceResponseETag(resource)
+		usePlayback := c.Query("variant") == "playback" && resource.Provider == "local" &&
+			resource.PlaybackStatus == model.PlaybackStatusReady && resource.PlaybackObjectKey != ""
+		serveETag := etag
+		if usePlayback {
+			serveETag = etag + ":pb"
+		}
 		// 私有资源允许浏览器保存响应，但每次复用前必须重新鉴权；304 会在读取 OSS 前返回。
 		c.Header("Cache-Control", "private, no-cache")
-		c.Header("ETag", etag)
+		c.Header("ETag", serveETag)
 		c.Header("Accept-Ranges", "bytes")
 		c.Header("X-Content-Type-Options", "nosniff")
 		if c.Query("download") == "1" || resource.Kind == "file" {
-			c.Header("Content-Disposition", "attachment")
+			c.Header("Content-Disposition", service.ContentDispositionAttachment(service.ResourceDownloadFileName(resource)))
 			c.Header("Content-Security-Policy", "sandbox")
 		}
-		if ifNoneMatch(c.GetHeader("If-None-Match"), etag) {
+		if ifNoneMatch(c.GetHeader("If-None-Match"), serveETag) {
 			c.Status(http.StatusNotModified)
 			return
 		}
 		rangeHeader := c.GetHeader("Range")
-		if ifRange := strings.TrimSpace(c.GetHeader("If-Range")); ifRange != "" && ifRange != etag {
+		if ifRange := strings.TrimSpace(c.GetHeader("If-Range")); ifRange != "" && ifRange != serveETag {
 			rangeHeader = ""
 		}
-		stream, err := svc.OpenResourceRange(user.ID, resource.ID, rangeHeader)
+		var stream *service.ResourceStream
+		if usePlayback {
+			stream, err = svc.OpenResourcePlaybackRange(user.ID, resource.ID)
+			if err == nil {
+				resource = stream.Resource
+			} else if errors.Is(err, service.ErrPlaybackNotReady) {
+				c.Header("ETag", etag)
+				stream, err = svc.OpenResourceRange(user.ID, resource.ID, rangeHeader)
+			}
+		} else {
+			stream, err = svc.OpenResourceRange(user.ID, resource.ID, rangeHeader)
+		}
 		if err != nil {
 			failService(c, err)
 			return
@@ -551,6 +606,17 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
+		if c.Query("page") != "" {
+			page, _ := strconv.Atoi(c.Query("page"))
+			pageSize, _ := strconv.Atoi(c.Query("page_size"))
+			result, pageErr := svc.UserCanvasProjectsPage(user.ID, page, pageSize, c.Query("project_id"), c.Query("q"), c.Query("sort"))
+			if pageErr != nil {
+				failService(c, pageErr)
+				return
+			}
+			ok(c, result)
+			return
+		}
 		projects, err := svc.UserCanvasProjectSummaries(user.ID)
 		if err != nil {
 			failService(c, err)
@@ -651,6 +717,18 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, gin.H{"id": c.Param("id")})
 	})
+}
+
+func resourceListLimit(c *gin.Context) (int, error) {
+	raw, present := c.GetQuery("limit")
+	if !present {
+		return 200, nil
+	}
+	limit, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || limit < 1 || limit > 500 {
+		return 0, service.BadAuthRequest("limit 必须是 1 到 500 之间的整数")
+	}
+	return limit, nil
 }
 
 func hasUserAssetPageFilters(c *gin.Context) bool {

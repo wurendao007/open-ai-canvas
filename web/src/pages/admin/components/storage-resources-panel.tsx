@@ -1,7 +1,6 @@
 import { App, Button, Input, Modal, Select } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { Download, Eye, Search, Trash2 } from "lucide-react";
-import { saveAs } from "file-saver";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 
@@ -148,8 +147,7 @@ export default function StorageResourcesPanel() {
     const download = async (resource: AdminStorageResource) => {
         setDownloadingId(resource.id);
         try {
-            const blob = await downloadAdminResource(resource);
-            saveAs(blob, fileName(resource.objectKey) || resource.id);
+            downloadAdminResource(resource);
         } catch (error) {
             message.error(error instanceof Error ? error.message : "下载资源失败");
         } finally {

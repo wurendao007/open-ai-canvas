@@ -21,6 +21,10 @@ func newProjectSettingsTestService(t *testing.T) (*Service, *gorm.DB) {
 		&model.Project{}, &model.ProjectUnit{}, &model.Resource{}, &model.Asset{}, &model.AssetVersion{}, &model.AssetRepresentation{},
 		&model.CanvasProject{}, &model.StyleProfile{}, &model.ProjectAssetCandidate{}, &model.WorkflowInstance{}, &model.WorkflowStepInstance{},
 		&model.Shot{}, &model.ShotArtifact{}, &model.VoiceProfile{},
+		// ResourceReferenceSnapshot 会扫描任务、任务日志、会话、消息、结果与公告，缺表会让
+		// 引用检查直接报错，而不是如实报告“没有引用”。
+		&model.Task{}, &model.TaskLog{}, &model.Session{}, &model.Message{}, &model.Result{},
+		&model.Announcement{}, &model.AnnouncementImageDraft{},
 	); err != nil {
 		t.Fatal(err)
 	}

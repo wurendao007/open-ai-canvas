@@ -199,6 +199,11 @@ func adminResourceReferences(snapshot repository.ResourceReferenceSnapshot, reso
 	result := make(map[string][]AdminResourceReferenceView)
 	seen := make(map[string]map[string]struct{})
 	for _, reference := range snapshot.Direct {
+		// 未发布的配图草稿由删除事务级联清理（见 repository 的 AnnouncementImageDraft 删除），
+		// 不是拦截理由；已发布公告仍由 AnnouncementResourceReferences 和事务内校验拦住。
+		if reference.Kind == repository.ResourceReferenceKindAnnouncementDraft {
+			continue
+		}
 		appendAdminResourceReference(result, seen, reference.ResourceID, AdminResourceReferenceView{Kind: reference.Kind, ID: reference.ID, Title: reference.Title})
 	}
 	for _, resource := range resources {

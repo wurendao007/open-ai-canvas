@@ -410,6 +410,12 @@ func newResourceDeletionTestService(t *testing.T) (*Service, *gorm.DB, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// cache=shared 下，连接池的多个连接并发访问同一张表会直接报
+	// "database table is locked"（不等待锁）。删除 outbox 的 drain 协程
+	// 会与测试断言并发写库，限制为单连接让 database/sql 串行化访问。
+	if sqlDB, dbErr := db.DB(); dbErr == nil {
+		sqlDB.SetMaxOpenConns(1)
+	}
 	if err := database.MigrateSchema(db); err != nil {
 		t.Fatal(err)
 	}

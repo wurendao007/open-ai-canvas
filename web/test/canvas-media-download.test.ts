@@ -18,6 +18,11 @@ function mediaNode(overrides: Partial<CanvasNodeData> = {}): CanvasNodeData {
 }
 
 describe("canvas media download", () => {
+    test("preserves a node title that is already the asset original name", () => {
+        const node = mediaNode({ title: "1_ms5j5372_055a0c6432a53328.png" });
+        expect(buildCanvasMediaDownloadFileName("自由画布", node, new Date(2026, 8, 4))).toBe("1_ms5j5372_055a0c6432a53328.png");
+    });
+
     test("按画布名、节点名和本地日期生成文件名", () => {
         expect(buildCanvasMediaDownloadFileName("写给阿妈的情书", mediaNode(), new Date(2026, 7, 28, 12))).toBe("写给阿妈的情书_女明星角色三视图_20260828.png");
     });

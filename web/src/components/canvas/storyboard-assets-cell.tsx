@@ -98,7 +98,10 @@ function useNodeMediaSource(node: CanvasNodeData | null) {
     const resourceId = resourceIdFromStorageKey(rawStorageKey) || resourceIdFromFileUrl(fallback);
     const storageKey = rawStorageKey || (resourceId ? resourceStorageKey(resourceId) : "");
     const safeFallback = resourceId ? resourceFallbackUrl(resourceId, fallback) : fallback;
-    const [source, setSource] = useState(fallback);
+    // Do not mount a legacy /api/resources/:id/file fallback for one render.
+    // Resolve the cache/direct URL first; otherwise opening the storyboard
+    // preview briefly starts an unnecessary same-origin request.
+    const [source, setSource] = useState(safeFallback);
     useEffect(() => {
         let cancelled = false;
         setSource(safeFallback);

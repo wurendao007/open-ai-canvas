@@ -1,16 +1,7 @@
-import { DREAMINA_SUBMIT_ERROR_MESSAGES, generationErrorMessage } from "@/lib/generation-error";
+import { generationErrorMessage } from "@/lib/generation-error";
 import { apiBaseURL, apiClient, request, type BackendEnvelope } from "@/services/api/request";
 import { consumeTaskTextStream, createTaskTextStreamParser, type TaskTextStreamEvent } from "@/services/api/task-text-stream";
 import { recordDiagnosticEvent } from "@/services/diagnostics/client-diagnostics";
-import {
-    deleteLocalDreaminaGenerationTask,
-    listLocalDreaminaGenerationTaskPage,
-    queryLocalDreaminaGenerationTask,
-    refreshLocalDreaminaGenerationTask,
-    waitForLocalDreaminaGenerationTask,
-    type LocalDreaminaGenerationTask,
-} from "@/services/local-dreamina-generation";
-import { isLocalDreaminaTaskId, projectLocalDreaminaDiagnosticLog, projectLocalDreaminaTask, stripLocalDreaminaTaskPrefix } from "@/services/local-dreamina-task-projection";
 
 export type { BackendEnvelope } from "@/services/api/request";
 
@@ -52,6 +43,7 @@ export type GenerationTask = {
     officialStatus?: "pending" | "processing" | "completed" | "failed" | "cancelled";
     receiptRecorded?: boolean;
     previewUrl?: string;
+    previewPosterUrl?: string;
     previewKind?: "image" | "video";
     inputJson?: string;
     resultJson?: string;
@@ -250,9 +242,7 @@ type GenerationTaskPage<T> = { tasks: T[]; nextCursor?: string };
 type GenerationTaskListOptions = { projectId?: string; activeOnly?: boolean };
 type GenerationTaskListDependencies = {
     listBackend?(limit: number, options?: GenerationTaskListOptions, signal?: AbortSignal): Promise<GenerationTask[]>;
-    listLocal?(options?: GenerationTaskListOptions, signal?: AbortSignal): Promise<LocalDreaminaGenerationTask[]>;
     listBackendPage?(request: GenerationTaskPageRequest, signal?: AbortSignal): Promise<GenerationTaskPage<GenerationTask>>;
-    listLocalPage?(request: GenerationTaskPageRequest, signal?: AbortSignal): Promise<GenerationTaskPage<LocalDreaminaGenerationTask>>;
 };
 
 const defaultGenerationTaskListDependencies: GenerationTaskListDependencies = {
@@ -264,7 +254,6 @@ const defaultGenerationTaskListDependencies: GenerationTaskListDependencies = {
             }),
         ),
     }),
-    listLocalPage: (page, signal) => listLocalDreaminaGenerationTaskPage(page, {}, signal),
 };
 
 export async function listGenerationTasks(limit = 30, options?: { projectId?: string; activeOnly?: boolean }, dependencies: GenerationTaskListDependencies = defaultGenerationTaskListDependencies, signal?: AbortSignal) {
@@ -288,21 +277,9 @@ export async function listGenerationTasks(limit = 30, options?: { projectId?: st
                     pageSignal,
                 )) ?? [],
         }));
-    const localPageReader =
-        dependencies.listLocalPage ??
-        (async (page: GenerationTaskPageRequest, pageSignal?: AbortSignal) => ({
-            tasks:
-                (await dependencies.listLocal?.(
-                    {
-                        ...(page.projectId ? { projectId: page.projectId } : {}),
-                        activeOnly: page.activeOnly,
-                    },
-                    pageSignal,
-                )) ?? [],
-        }));
-    const [backendTasks, localTasks] = await Promise.all([collectGenerationTaskPages(backendPageReader, baseRequest, boundedLimit, signal), collectGenerationTaskPages(localPageReader, baseRequest, boundedLimit, signal).catch(() => [])]);
+    const backendTasks = await collectGenerationTaskPages(backendPageReader, baseRequest, boundedLimit, signal);
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-    return [...backendTasks, ...localTasks.map((task) => projectLocalDreaminaTask(task))]
+    return backendTasks
         .filter((task) => !options?.projectId || task.projectId === options.projectId)
         .filter((task) => !options?.activeOnly || task.status === "queued" || task.status === "running")
         .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.id.localeCompare(left.id))
@@ -326,22 +303,7 @@ async function collectGenerationTaskPages<T>(readPage: (request: GenerationTaskP
 }
 
 export function queryGenerationTask(id: string, options?: { signal?: AbortSignal }) {
-    if (isLocalDreaminaTaskId(id)) {
-        return queryLocalDreaminaGenerationTask(stripLocalDreaminaTaskPrefix(id), undefined, {}, options?.signal).then((task) => projectLocalDreaminaTask(task));
-    }
     return request<GenerationTask>(api.get(`/tasks/${encodeURIComponent(id)}`, { signal: options?.signal }));
-}
-
-export function waitForLocalGenerationTask(id: string, options?: { signal?: AbortSignal }) {
-    if (!isLocalDreaminaTaskId(id)) return Promise.reject(new Error("当前任务不是本机即梦任务"));
-    return waitForLocalDreaminaGenerationTask(stripLocalDreaminaTaskPrefix(id), undefined, {}, options?.signal).then((task) => projectLocalDreaminaTask(task));
-}
-
-export function splitGenerationTaskObservationIds(ids: readonly string[]) {
-    return {
-        localWaitIds: ids.filter(isLocalDreaminaTaskId),
-        remotePollIds: ids.filter((id) => !isLocalDreaminaTaskId(id)),
-    };
 }
 
 type GenerationTaskSubscriptionDependencies = {
@@ -416,9 +378,6 @@ export function retryGenerationTask(id: string) {
 }
 
 export function cancelGenerationTask(id: string) {
-    if (isLocalDreaminaTaskId(id)) {
-        return Promise.reject(new Error("官方即梦 CLI 当前不支持可靠取消"));
-    }
     return request<GenerationTask>(api.post(`/tasks/${encodeURIComponent(id)}/cancel`)).then((task) => {
         window.dispatchEvent(new CustomEvent("canvas:task-cancelled", { detail: { task } }));
         window.dispatchEvent(new CustomEvent("wallet:updated"));
@@ -431,42 +390,20 @@ export function queryFailedVideoProviderTask(id: string) {
 }
 
 export function refreshGenerationTaskStatus(id: string, options?: { signal?: AbortSignal }) {
-    if (!isLocalDreaminaTaskId(id)) return Promise.reject(new Error("当前任务不支持手动更新官方状态"));
-    return refreshLocalDreaminaGenerationTask(stripLocalDreaminaTaskPrefix(id), {}, options?.signal).then((task) => projectLocalDreaminaTask(task));
+    return queryGenerationTask(id, options);
 }
 
 export function deleteGenerationTask(id: string) {
-    if (!isLocalDreaminaTaskId(id)) return Promise.reject(new Error("当前任务不支持删除"));
-    return deleteLocalDreaminaGenerationTask(stripLocalDreaminaTaskPrefix(id));
+    return request<void>(api.delete(`/tasks/${encodeURIComponent(id)}`));
 }
 
 export async function listTaskLogs(id: string) {
-    if (isLocalDreaminaTaskId(id)) {
-        const task = await queryGenerationTask(id);
-        return [projectGenerationTaskSafeLog(task)];
-    }
     const raw = await request<Array<{ level?: unknown; message?: unknown; payload?: unknown; createdAt?: unknown }>>(api.get(`/tasks/${encodeURIComponent(id)}/logs`));
     return raw.map((log, index) => projectBackendSafeTaskLog(id, log, index));
 }
 
 export function formatTaskLog(log: TaskLog) {
     return [`stage=${log.stage}`, ...(log.errorCode ? [`error=${log.errorCode}`] : []), `provenance=${log.provenance}`, ...(log.observedAt ? [`observedAt=${log.observedAt}`] : [])].join(" ");
-}
-
-function projectGenerationTaskSafeLog(task: GenerationTask): TaskLog {
-    const diagnostic = projectLocalDreaminaDiagnosticLog({
-        level: task.errorCode || task.status === "failed" || task.status === "cancelled" ? "error" : "info",
-        stage: task.stage || task.status,
-        errorCode: task.errorCode,
-        provenance: task.officialStatus ? "provider_observation" : "task_state",
-        observedAt: task.updatedAt,
-    });
-    return {
-        id: `safe:${task.id}:${task.updatedAt}`,
-        taskId: task.id,
-        ...diagnostic,
-        createdAt: diagnostic.observedAt,
-    };
 }
 
 export function projectBackendSafeTaskLog(taskId: string, raw: { level?: unknown; message?: unknown; payload?: unknown; createdAt?: unknown }, index: number): TaskLog {
@@ -491,13 +428,11 @@ function safeTaskLogStage(value: unknown) {
     return match?.[1]?.toLowerCase();
 }
 
-const SAFE_TASK_LOG_ERROR_CODES = new Set([...Object.keys(DREAMINA_SUBMIT_ERROR_MESSAGES), "dreamina_query_failed", "dreamina_submission_unknown", "dreamina_reference_invalid"]);
-
 function safeTaskLogErrorCode(value: unknown) {
     if (typeof value !== "string") return undefined;
-    for (const match of value.matchAll(/(?:dreamina|local_generation|model|provider)_[a-z0-9_]{2,80}/gi)) {
+    for (const match of value.matchAll(/(?:model|provider)_[a-z0-9_]{2,80}/gi)) {
         const errorCode = match[0].toLowerCase();
-        if (SAFE_TASK_LOG_ERROR_CODES.has(errorCode)) return errorCode;
+        if (/^(?:model|provider)_[a-z0-9_]{2,80}$/.test(errorCode)) return errorCode;
     }
     return undefined;
 }
@@ -513,20 +448,6 @@ export type WaitForGenerationTaskOptions = {
 };
 
 export async function waitForGenerationTask(id: string, options?: WaitForGenerationTaskOptions) {
-    if (isLocalDreaminaTaskId(id)) {
-        try {
-            const task = await waitForLocalGenerationTask(id, { signal: options?.signal });
-            options?.onTaskUpdate?.(task);
-            if (task.status === "succeeded") return task;
-            if (task.status === "failed" || task.status === "cancelled") {
-                throw new Error(task.error ? generationErrorMessage(task.error) : `任务${task.status === "cancelled" ? "已取消" : "失败"}`);
-            }
-            throw new Error("本机即梦任务等待提前结束");
-        } catch (error) {
-            if (options?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
-            throw error;
-        }
-    }
     if (options?.onTextDelta || options?.useTextEvents) return waitForGenerationTaskTextEvents(id, options);
     const startedAt = Date.now();
     const intervalMs = options?.intervalMs || 2000;

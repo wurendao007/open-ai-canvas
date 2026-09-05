@@ -1,11 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Dropdown } from "antd";
-import { CachedResourceImage } from "@/components/cached-resource-image";
 import { FileAudio, FileText, MoreHorizontal, Pencil, Plus, SlidersHorizontal, Sparkles, Video } from "lucide-react";
 
 import { CANVAS_FOLDER_THEME_OPTIONS, resolveCanvasFolderTheme, resolveCanvasFolderThemeCover } from "@/lib/canvas/canvas-folder-theme";
 import { canvasNodeVideoPreviewUrl } from "@/lib/canvas/canvas-media-preview";
-import { resourceIdFromFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
 import type { CanvasFolderStyle, CanvasFolderTheme, CanvasNodeData } from "@/types/canvas";
 import { CanvasNodeType } from "@/types/canvas";
 
@@ -190,14 +188,11 @@ function FolderThemeMedia({ source }: { source: string }) {
 
 function FolderNodeMedia({ node }: { node?: CanvasNodeData }) {
     if (node?.type === CanvasNodeType.Image && node.metadata?.content) {
-        const resourceId = resourceIdFromStorageKey(node.metadata.storageKey) || resourceIdFromFileUrl(node.metadata.content);
-        return resourceId ? <CachedResourceImage storageKey={`resource:${resourceId}`} src={node.metadata.content} alt="" loading="lazy" decoding="async" draggable={false} /> : <img src={node.metadata.content} alt="" loading="lazy" decoding="async" draggable={false} />;
+        return <img src={node.metadata.content} alt="" loading="lazy" decoding="async" draggable={false} />;
     }
     const videoPreview = node ? canvasNodeVideoPreviewUrl(node) : "";
     if (videoPreview) {
-        const resourceId = resourceIdFromFileUrl(videoPreview);
-        const storageKey = node?.metadata?.videoPreview?.storageKey || (resourceId ? `resource:${resourceId}` : undefined);
-        return <CachedResourceImage storageKey={storageKey} src={videoPreview} alt="" loading="lazy" decoding="async" draggable={false} />;
+        return <img src={videoPreview} alt="" loading="lazy" decoding="async" draggable={false} />;
     }
     if (node?.type === CanvasNodeType.Drawing && (node.metadata?.drawingPreviewUrl || node.metadata?.content)) {
         return <img src={node.metadata.drawingPreviewUrl || node.metadata.content} alt="" loading="lazy" decoding="async" draggable={false} />;

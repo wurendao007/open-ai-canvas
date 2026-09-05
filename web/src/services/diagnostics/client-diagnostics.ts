@@ -124,7 +124,7 @@ export function recordDiagnosticEvent(input: DiagnosticEventInput) {
         category: input.category,
         code: redactClientText(input.code),
         message: redactClientText(input.message) || "未命名诊断事件",
-        route: normalizeRoute(input.route || (typeof window !== "undefined" ? window.location.pathname : "")),
+        route: normalizeRoute(input.route),
         durationMs: input.durationMs === undefined ? undefined : clampNumber(input.durationMs, 0, 86_400_000),
         httpStatus: input.httpStatus === undefined ? undefined : clampNumber(input.httpStatus, 0, 599),
         requestId: safeDiagnosticId(input.requestId),
@@ -179,13 +179,24 @@ function readHeader(headers: unknown, key: string) {
 
 function normalizeRoute(value?: string) {
     const raw = String(value || "").trim();
-    if (!raw) return typeof window !== "undefined" ? window.location.pathname : "/";
+    if (!raw) return currentPathname();
     try {
-        const parsed = new URL(raw, typeof window !== "undefined" ? window.location.origin : "http://localhost");
+        const parsed = new URL(raw, currentOrigin());
         return parsed.pathname || "/";
     } catch {
         return raw.split(/[?#]/, 1)[0] || "/";
     }
+}
+
+// 诊断记录是错误上报路径：它自己抛异常会把真正的故障盖掉。
+// 只判断 typeof window 不够——SSR 预渲染和非 DOM 测试环境里 window 可能存在但没有
+// location，因此这里逐层取值并回退。
+function currentPathname() {
+    return globalThis.window?.location?.pathname || "/";
+}
+
+function currentOrigin() {
+    return globalThis.window?.location?.origin || "http://localhost";
 }
 
 function safeDiagnosticId(value?: string) {

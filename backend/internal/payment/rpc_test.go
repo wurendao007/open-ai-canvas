@@ -12,6 +12,10 @@ import (
 )
 
 func TestRPCProviderUsesPaymentV1Contract(t *testing.T) {
+	// 用例依赖 #!/bin/sh 脚本可直接执行，而 call() 也固定 PATH=/usr/bin:/bin；
+	// Windows 上没有 shebang 语义，无法跑通进程 ABI。路径校验由下面的
+	// TestNewRPCProviderValidatesEntryPathAcrossPlatforms 覆盖，
+	// 那部分是纯字符串逻辑，两个平台都必须一致。
 	if runtime.GOOS == "windows" {
 		t.Skip("test provider uses a POSIX shell script")
 	}
@@ -161,4 +165,34 @@ func testRPCProvider(t *testing.T, program string) *RPCProvider {
 		t.Fatal(err)
 	}
 	return provider
+}
+
+// 插件清单里的 entry 是斜杠路径合同，校验必须与宿主操作系统无关：
+// 用 filepath.Clean 时 Windows 会把 "backend/provider" 规范成反斜杠形式而与原值不等，
+// 于是所有合法插件都被拒绝。越权路径在任何平台上都必须继续被拦住。
+func TestNewRPCProviderValidatesEntryPathAcrossPlatforms(t *testing.T) {
+	dir := t.TempDir()
+	descriptor := Descriptor{ID: "test-provider", PluginID: "test-plugin"}
+	provider, err := NewRPCProvider(descriptor, dir, "backend/provider")
+	if err != nil {
+		t.Fatalf("合法的斜杠 entry 被拒绝：%v", err)
+	}
+	if provider.command != filepath.Join(dir, filepath.FromSlash("backend/provider")) {
+		t.Fatalf("command = %q", provider.command)
+	}
+	if _, err := NewRPCProvider(descriptor, dir, "backend/nested/provider"); err != nil {
+		t.Fatalf("多级斜杠 entry 被拒绝：%v", err)
+	}
+	for name, entry := range map[string]string{
+		"目录穿越":   "backend/../../etc/passwd",
+		"未规范化路径": "backend/./provider",
+		"越出前缀":   "plugins/provider",
+		"反斜杠路径":  `backend\provider`,
+		"绝对路径":   "/backend/provider",
+		"空路径":    "",
+	} {
+		if _, err := NewRPCProvider(descriptor, dir, entry); err == nil {
+			t.Fatalf("%s 应被拒绝：%q", name, entry)
+		}
+	}
 }

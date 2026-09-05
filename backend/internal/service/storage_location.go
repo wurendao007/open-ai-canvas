@@ -100,10 +100,8 @@ func (s *Service) testOSSSetting(scope string, ownerID string, actorID string, r
 
 func verifyOSSConnection(value ossSettingValue, testKey string) error {
 	payload := []byte("yingce-storage-test")
-	// 连接测试验证服务端到对象存储的真实读写权限。CDN 是浏览器读取出口，
-	// 可能存在回源鉴权或边缘同步延迟，不能参与刚写入对象的最小读写测试。
+	// 连接测试验证服务端到对象存储源站的真实读写权限。
 	testValue := value
-	testValue.CDNBaseURL = ""
 	if _, err := putOSSObject(testValue, testKey, "application/octet-stream", int64(len(payload)), bytes.NewReader(payload)); err != nil {
 		return storageConnectionTestError(testValue.Provider, "写入", err)
 	}
@@ -199,7 +197,7 @@ func storageConnectionTestError(provider string, operation string, cause error) 
 }
 
 func (s *Service) upsertStorageLocation(scope string, ownerID string, value ossSettingValue) (*model.StorageLocation, error) {
-	digest := storageLocationDigest(value)
+	digest := storageLocationIdentityDigest(scope, value)
 	location, err := s.repo.StorageLocationByDigest(scope, ownerID, value.Provider, digest)
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err

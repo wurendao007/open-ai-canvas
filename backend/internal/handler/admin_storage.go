@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"net/http"
 	"strconv"
+	"strings"
 
 	"infinite-canvas/backend/internal/service"
 
@@ -48,8 +50,11 @@ func RegisterAdminStorageRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
-		page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+		page, limit, err := adminResourcePagination(c)
+		if err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
 		result, err := svc.AdminResourcePage(user, service.AdminResourceQuery{
 			Keyword: c.Query("keyword"), Kind: c.Query("kind"), Status: c.Query("status"),
 			Provider: c.Query("provider"), UserID: c.Query("userId"), Page: page, Limit: limit,
@@ -84,7 +89,7 @@ func RegisterAdminStorageRoutes(r *gin.RouterGroup, svc *service.Service) {
 			c.Header("Content-Range", stream.ContentRange)
 		}
 		if c.Query("download") == "1" {
-			c.Header("Content-Disposition", "attachment")
+			c.Header("Content-Disposition", service.ContentDispositionAttachment(service.ResourceDownloadFileName(stream.Resource)))
 		}
 		c.DataFromReader(stream.StatusCode, stream.ContentLength, mimeType, stream.Body, nil)
 	})
@@ -104,4 +109,28 @@ func RegisterAdminStorageRoutes(r *gin.RouterGroup, svc *service.Service) {
 		c.Header("Referrer-Policy", "no-referrer")
 		ok(c, gin.H{"url": directURL, "proxy": proxy})
 	})
+}
+
+func adminResourcePagination(c *gin.Context) (int, int, error) {
+	page, err := queryPositiveInt(c, "page", 1, 1_000_000)
+	if err != nil {
+		return 0, 0, err
+	}
+	limit, err := queryPositiveInt(c, "limit", 20, 100)
+	if err != nil {
+		return 0, 0, err
+	}
+	return page, limit, nil
+}
+
+func queryPositiveInt(c *gin.Context, key string, defaultValue int, maxValue int) (int, error) {
+	raw, present := c.GetQuery(key)
+	if !present {
+		return defaultValue, nil
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || value < 1 || value > maxValue {
+		return 0, service.BadAuthRequest(key + " 必须是有效的分页整数")
+	}
+	return value, nil
 }

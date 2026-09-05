@@ -10,10 +10,10 @@ type ResolvedResourceVideoProps = Omit<VideoHTMLAttributes<HTMLVideoElement>, "s
 
 /** Resolves an owned resource to a short-lived provider URL before mounting video. */
 export function ResolvedResourceVideo({ resourceId, fallback = "", ...props }: ResolvedResourceVideoProps) {
-    const { onError, ...videoProps } = props;
-    const { src, refresh } = useResolvedResourceUrl(resourceId, fallback);
+    const { onError, onLoadedMetadata, ...videoProps } = props;
+    const { src, refresh, restoreTime } = useResolvedResourceUrl(resourceId, fallback);
     if (!src) return null;
-    return <video {...videoProps} src={src} onError={(event) => handleMediaError(event, refresh, onError)} />;
+    return <video {...videoProps} src={src} onLoadedMetadata={(event) => { restoreTime(event.currentTarget); onLoadedMetadata?.(event); }} onError={(event) => handleMediaError(event, refresh, onError)} />;
 }
 
 type ResolvedResourceVideoSourceProps = Omit<VideoHTMLAttributes<HTMLVideoElement>, "src"> & {
@@ -36,10 +36,10 @@ type ResolvedResourceAudioProps = Omit<AudioHTMLAttributes<HTMLAudioElement>, "s
 };
 
 export function ResolvedResourceAudio({ resourceId, fallback = "", ...props }: ResolvedResourceAudioProps) {
-    const { onError, ...audioProps } = props;
-    const { src, refresh } = useResolvedResourceUrl(resourceId, fallback);
+    const { onError, onLoadedMetadata, ...audioProps } = props;
+    const { src, refresh, restoreTime } = useResolvedResourceUrl(resourceId, fallback);
     if (!src) return null;
-    return <audio {...audioProps} src={src} onError={(event) => handleMediaError(event, refresh, onError)} />;
+    return <audio {...audioProps} src={src} onLoadedMetadata={(event) => { restoreTime(event.currentTarget); onLoadedMetadata?.(event); }} onError={(event) => handleMediaError(event, refresh, onError)} />;
 }
 
 type ResolvedResourceAudioSourceProps = Omit<AudioHTMLAttributes<HTMLAudioElement>, "src"> & {
@@ -56,12 +56,15 @@ export function ResolvedResourceAudioSource({ src = "", storageKey, fallback = s
 }
 
 function useResolvedResourceUrl(resourceId: string, fallback: string) {
+    const maxRefreshAttempts = 2;
     const safeFallback = resourceFallbackUrl(resourceId, fallback);
     const [src, setSrc] = useState("");
     const [refreshVersion, setRefreshVersion] = useState(0);
-    const retryAttemptedRef = useRef(false);
+    const refreshAttemptsRef = useRef(0);
+    const pendingTimeRef = useRef<number | null>(null);
     useEffect(() => {
-        retryAttemptedRef.current = false;
+        refreshAttemptsRef.current = 0;
+        pendingTimeRef.current = null;
         setRefreshVersion(0);
     }, [fallback, resourceId]);
     useEffect(() => {
@@ -80,15 +83,22 @@ function useResolvedResourceUrl(resourceId: string, fallback: string) {
     }, [refreshVersion, resourceId, safeFallback]);
     return {
         src,
-        refresh: () => {
-            if (retryAttemptedRef.current) return false;
-            retryAttemptedRef.current = true;
+        refresh: (currentTime: number) => {
+            if (refreshAttemptsRef.current >= maxRefreshAttempts) return false;
+            refreshAttemptsRef.current += 1;
+            pendingTimeRef.current = Number.isFinite(currentTime) && currentTime > 0 ? currentTime : null;
             setRefreshVersion((value) => value + 1);
             return true;
+        },
+        restoreTime: (media: HTMLMediaElement) => {
+            const currentTime = pendingTimeRef.current;
+            if (currentTime === null) return;
+            pendingTimeRef.current = null;
+            if (Number.isFinite(media.duration) && media.duration > 0) media.currentTime = Math.min(currentTime, Math.max(0, media.duration - 0.05));
         },
     };
 }
 
-function handleMediaError<T extends HTMLMediaElement>(event: SyntheticEvent<T>, refresh: () => boolean, onError?: (event: SyntheticEvent<T>) => void) {
-    if (!refresh()) onError?.(event);
+function handleMediaError<T extends HTMLMediaElement>(event: SyntheticEvent<T>, refresh: (currentTime: number) => boolean, onError?: (event: SyntheticEvent<T>) => void) {
+    if (!refresh(event.currentTarget.currentTime)) onError?.(event);
 }

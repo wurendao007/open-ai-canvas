@@ -14,6 +14,14 @@ type ChannelInterfaceType string
 type ApiCallStatus string
 type ResourceStatus string
 type ResourceDeletionStatus string
+
+const (
+	PlaybackStatusNone       = "none"
+	PlaybackStatusProcessing = "processing"
+	PlaybackStatusReady      = "ready"
+	PlaybackStatusFailed     = "failed"
+)
+
 type BillingStatus string
 type CreditLedgerType string
 type RedeemCodeStatus string

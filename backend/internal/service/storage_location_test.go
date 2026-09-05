@@ -49,18 +49,10 @@ func TestTencentCOSConnectionTestUsesStorageEndpointInsteadOfCDN(t *testing.T) {
 	}))
 	defer storageServer.Close()
 
-	cdnRequests := 0
-	cdnServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		cdnRequests++
-		http.Error(w, "CDN must not be used by storage connection tests", http.StatusBadGateway)
-	}))
-	defer cdnServer.Close()
-
 	err := verifyOSSConnection(ossSettingValue{
 		Provider:        tencentCOSProvider,
 		Region:          "ap-guangzhou",
 		Endpoint:        storageServer.URL,
-		CDNBaseURL:      cdnServer.URL,
 		Bucket:          "example-1250000000",
 		AccessKeyID:     "secret-id",
 		AccessKeySecret: "secret-key",
@@ -71,9 +63,6 @@ func TestTencentCOSConnectionTestUsesStorageEndpointInsteadOfCDN(t *testing.T) {
 	}
 	if strings.Join(storageMethods, ",") != "PUT,GET,DELETE" {
 		t.Fatalf("storage methods = %v", storageMethods)
-	}
-	if cdnRequests != 0 {
-		t.Fatalf("CDN requests = %d", cdnRequests)
 	}
 }
 

@@ -62,7 +62,7 @@ function normalizeTombstones(value: unknown): CanvasStorageTombstones {
 export function parseCanvasStorageDocument(value: string | null, fallback: CanvasProject[] = []): CanvasStorageDocument {
     if (!value) {
         return {
-            state: { projects: normalizeProjectAssetCategories(fallback) },
+            state: { projects: normalizeCanvasProjects(fallback) },
             version: 0,
             storageRevision: 0,
             tombstones: emptyTombstones(),
@@ -76,25 +76,62 @@ export function parseCanvasStorageDocument(value: string | null, fallback: Canva
     };
     if (!Array.isArray(parsed.state?.projects)) throw new Error("画布持久状态无效");
     return {
-        state: { projects: normalizeProjectAssetCategories(parsed.state.projects as CanvasProject[]) },
+        state: { projects: normalizeCanvasProjects(parsed.state.projects as CanvasProject[]) },
         version: typeof parsed.version === "number" ? parsed.version : 0,
         storageRevision: typeof parsed.storageRevision === "number" && Number.isFinite(parsed.storageRevision) ? parsed.storageRevision : 0,
         tombstones: normalizeTombstones(parsed.tombstones),
     };
 }
 
-function normalizeProjectAssetCategories(projects: CanvasProject[]) {
+const RETIRED_PORTRAIT_CLEARANCE_NODE_TYPE = "portrait-clearance";
+
+export function normalizeCanvasProjects(projects: CanvasProject[]) {
     return projects.map((project) => {
         let changed = false;
+        const retiredNodeIds = new Set(
+            project.nodes.filter((node) => node.type === RETIRED_PORTRAIT_CLEARANCE_NODE_TYPE).map((node) => node.id),
+        );
         const nodes = project.nodes.map((node) => {
+            if (retiredNodeIds.has(node.id)) {
+                changed = true;
+                return null;
+            }
+
+            let metadata = node.metadata;
+            if (metadata && Object.prototype.hasOwnProperty.call(metadata, "portraitClearance")) {
+                metadata = { ...metadata };
+                delete (metadata as Record<string, unknown>).portraitClearance;
+                changed = true;
+            }
             const category = node.metadata?.assetCategory;
-            if (!category) return node;
-            const normalized = normalizeAssetCategory(category);
-            if (normalized === category) return node;
-            changed = true;
-            return { ...node, metadata: { ...node.metadata, assetCategory: normalized } };
-        });
-        return changed ? { ...project, nodes } : project;
+            if (category) {
+                const normalized = normalizeAssetCategory(category);
+                if (normalized !== category) {
+                    metadata = { ...(metadata || {}), assetCategory: normalized };
+                    changed = true;
+                }
+            }
+            return metadata === node.metadata ? node : { ...node, metadata };
+        }).filter((node): node is CanvasProject["nodes"][number] => Boolean(node));
+
+        const connections = retiredNodeIds.size
+            ? project.connections.filter((connection) => !retiredNodeIds.has(connection.fromNodeId) && !retiredNodeIds.has(connection.toNodeId))
+            : project.connections;
+        if (connections.length !== project.connections.length) changed = true;
+
+        const projectRecord = project as CanvasProject & { selectedNodeIds?: unknown };
+        const selectedNodeIds = projectRecord.selectedNodeIds;
+        let normalizedSelection = selectedNodeIds;
+        if (Array.isArray(selectedNodeIds)) {
+            const filteredSelection = selectedNodeIds.filter((id): id is string => typeof id === "string" && !retiredNodeIds.has(id));
+            normalizedSelection = filteredSelection;
+            if (filteredSelection.length !== selectedNodeIds.length) changed = true;
+        }
+
+        if (!changed) return project;
+        const normalizedProject = { ...project, nodes, connections } as CanvasProject & { selectedNodeIds?: unknown };
+        if (Array.isArray(selectedNodeIds)) normalizedProject.selectedNodeIds = normalizedSelection;
+        return normalizedProject;
     });
 }
 

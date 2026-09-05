@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import {
     DEFAULT_CANVAS_BACKGROUND_MODE,
@@ -14,6 +14,14 @@ import {
 } from "../src/lib/canvas/canvas-appearance";
 
 const values = new Map<string, string>();
+
+// bun test 在同一进程内顺序执行所有测试文件；这里的 window 桩只含 localStorage，
+// 若不恢复会泄漏给后续文件，使 effectStorage/effectLock 等按“浏览器环境”分支
+// 走真实 localforage / navigator.locks，制造跨文件的未处理 rejection。
+// 本文件运行前 window 为 undefined，因此恢复动作就是删除该属性。
+afterEach(() => {
+    delete (globalThis as { window?: unknown }).window;
+});
 
 beforeEach(() => {
     values.clear();

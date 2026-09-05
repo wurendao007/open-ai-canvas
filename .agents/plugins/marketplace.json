@@ -1,14 +1,14 @@
 {
-  "name": "yingce-local",
+  "name": "kraftreel-local",
   "interface": {
-    "displayName": "影策 Local"
+    "displayName": "KraftReel Local"
   },
   "plugins": [
     {
-      "name": "yingce",
+      "name": "kraftreel",
       "source": {
         "source": "local",
-        "path": "./plugins/yingce"
+        "path": "./plugins/kraftreel"
       },
       "policy": {
         "installation": "AVAILABLE",

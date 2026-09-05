@@ -3,7 +3,6 @@ import localforage from "localforage";
 
 import { createGenerationTaskSubscriptionService, type GenerationTask } from "../src/services/api/task-center";
 import { createGenerationTaskMaterializer, createIdempotentMaterializeOutput, materializeEffectKey, type GenerationTaskEffectClaim, type GenerationTaskEffectStore } from "../src/services/generation-task-materializer";
-import { createLocalDreaminaTaskEffectStore } from "../src/services/local-dreamina-generation";
 import { applyCanvasGenerationTaskNodeEffect, persistCanvasAgentGenerationContinuationEffect, persistCanvasGenerationEffect } from "../src/services/canvas-generation-consumer";
 import { canvasCinematicContinuationEntryAdapters } from "../src/components/canvas/canvas-assistant-panel";
 import { applyGenerationConsumerEffect, generationEffectApplied } from "../src/services/generation-consumer-dedupe";
@@ -1092,8 +1091,8 @@ describe("generation task materializer", () => {
         }
     });
 
-    test("online and local agents refresh-reconnect the original scoped task and resume once", async () => {
-        for (const provider of ["backend-online", "dreamina-cli"] as const) {
+    test("online agents refresh-reconnect the original scoped task and resume once", async () => {
+        for (const provider of ["backend-online"] as const) {
             const effects = createEffectStore();
             const materializer = createGenerationTaskMaterializer({
                 effects,
@@ -1109,7 +1108,7 @@ describe("generation task materializer", () => {
                 release = resolveGate;
             });
             const running: GenerationTask = {
-                id: provider === "dreamina-cli" ? "dreamina:agent-refresh-task-0001" : "backend-agent-refresh-task-0001",
+                id: "backend-agent-refresh-task-0001",
                 provider,
                 projectId: "agent-project-0001",
                 type: "agent_storyboard_rows",
@@ -1189,139 +1188,20 @@ describe("generation task materializer", () => {
         }
     });
 
-    test("two Web clients use the Agent atomic effect authority", async () => {
-        const leaseToken = "11111111-1111-4111-8111-111111111111";
-        let state: "available" | "claimed" | "completed" = "available";
-        const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
-        const request = async (path: string, init?: RequestInit) => {
-            const body = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
-            requests.push({ path, body });
-            let result: Record<string, unknown>;
-            if (path.endsWith("/claim")) {
-                result =
-                    state === "completed"
-                        ? { status: "completed", result: { materializedAssetId: "asset-agent-durable" } }
-                        : state === "claimed"
-                          ? { status: "busy", retryAt: "2026-08-13T00:00:30.000Z" }
-                          : ((state = "claimed"),
-                            {
-                                status: "claimed",
-                                leaseToken,
-                                leaseExpiresAt: "2026-08-13T00:00:30.000Z",
-                                fence: 1,
-                            });
-            } else if (path.endsWith("/renew")) {
-                result = {
-                    leaseExpiresAt: "2026-08-13T00:00:40.000Z",
-                    fence: 1,
-                };
-            } else if (path.endsWith("/complete")) {
-                const completed = state === "claimed" && body.leaseToken === leaseToken;
-                if (completed) state = "completed";
-                result = { completed };
-            } else {
-                state = "available";
-                result = { released: true };
-            }
-            return new Response(JSON.stringify({ ok: true, result }), {
-                status: 200,
-                headers: { "content-type": "application/json" },
-            });
-        };
-        const client = () => ({
-            connect: async () => ({ state: "connected" }) as never,
-            request,
-        });
-        const first = createLocalDreaminaTaskEffectStore({ client: client() });
-        const second = createLocalDreaminaTaskEffectStore({ client: client() });
-        const effectKey = "materialize:dreamina:task-cross-tab:0";
-        const taskId = "dreamina:task-cross-tab";
+    test("two Web clients use provider-neutral atomic effect authority", async () => {
+        const first = createProviderNeutralGenerationTaskEffectStore();
+        const second = createProviderNeutralGenerationTaskEffectStore();
+        const effectKey = "materialize:backend-task-cross-tab:0";
+        const taskId = "backend-task-cross-tab";
 
         const claims = await Promise.all([first.claim(effectKey, taskId), second.claim(effectKey, taskId)]);
 
         expect(claims.map((claim) => claim.status).sort()).toEqual(["busy", "claimed"]);
         await first.complete(effectKey, taskId, { materializedAssetId: "asset-agent-durable" });
-        expect(requests.find((entry) => entry.path.endsWith("/complete"))?.body).toEqual({
-            consumerId: "web-generation-materializer",
-            taskId,
-            effectKey,
-            leaseToken,
-            fence: 1,
-            result: { materializedAssetId: "asset-agent-durable" },
-        });
         expect(await second.claim(effectKey, taskId)).toEqual({
             status: "completed",
             result: { materializedAssetId: "asset-agent-durable" },
         });
-    });
-
-    test("Web effect renewal carries the full task lease binding", async () => {
-        const leaseToken = "22222222-2222-4222-8222-222222222222";
-        const taskId = "dreamina:web-renew-task";
-        const effectKey = "attach-message:dreamina:web-renew-task:message-safe-id:0";
-        const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
-        const client = {
-            connect: async () => ({ state: "connected" }) as never,
-            request: async (path: string, init?: RequestInit) => {
-                const body = JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
-                requests.push({ path, body });
-                const result = path.endsWith("/claim") ? { status: "claimed", leaseToken, leaseExpiresAt: "2026-08-13T00:00:30.000Z", fence: 7 } : { leaseExpiresAt: "2026-08-13T00:00:40.000Z", fence: 7 };
-                return new Response(JSON.stringify({ ok: true, result }), {
-                    status: 200,
-                    headers: { "content-type": "application/json" },
-                });
-            },
-        };
-        const store = createLocalDreaminaTaskEffectStore({ client });
-
-        expect(await store.claim(effectKey, taskId)).toEqual({ status: "claimed", fence: 7 });
-        expect(await store.renew(effectKey, taskId)).toEqual({ fence: 7 });
-        expect(requests.at(-1)).toEqual({
-            path: "/dreamina/generate/effects/renew",
-            body: {
-                consumerId: "web-generation-materializer",
-                taskId,
-                effectKey,
-                leaseToken,
-                fence: 7,
-            },
-        });
-    });
-
-    test("a rejected release remains an explicit ownership error and keeps the local lease", async () => {
-        const leaseToken = "33333333-3333-4333-8333-333333333333";
-        const taskId = "dreamina:web-release-task";
-        const effectKey = "agent-resume:dreamina:web-release-task:continuation-safe-id";
-        let releaseCalls = 0;
-        const releaseBodies: Record<string, unknown>[] = [];
-        const client = {
-            connect: async () => ({ state: "connected" }) as never,
-            request: async (path: string, init?: RequestInit) => {
-                if (path.endsWith("/release")) {
-                    releaseBodies.push(JSON.parse(String(init?.body || "{}")) as Record<string, unknown>);
-                }
-                const result = path.endsWith("/claim") ? { status: "claimed", leaseToken, leaseExpiresAt: "2026-08-13T00:00:30.000Z", fence: 3 } : ((releaseCalls += 1), { released: false });
-                return new Response(JSON.stringify({ ok: true, result }), {
-                    status: 200,
-                    headers: { "content-type": "application/json" },
-                });
-            },
-        };
-        const store = createLocalDreaminaTaskEffectStore({ client });
-        await store.claim(effectKey, taskId);
-
-        await expect(store.release(effectKey, taskId)).rejects.toMatchObject({ code: "local_runtime_effect_lease_lost" });
-        await expect(store.release(effectKey, taskId)).rejects.toMatchObject({ code: "local_runtime_effect_lease_lost" });
-        expect(releaseCalls).toBe(2);
-        expect(releaseBodies).toEqual(
-            [0, 1].map(() => ({
-                consumerId: "web-generation-materializer",
-                taskId,
-                effectKey,
-                leaseToken,
-                fence: 3,
-            })),
-        );
     });
 
     test("a slow consumer renews its lease across the original TTL and blocks a second instance", async () => {
@@ -3075,7 +2955,10 @@ describe("generation task materializer", () => {
     test("generic task materialization never treats a local Canvas id as a backend project id", async () => {
         const source = await Bun.file(new URL("../src/services/project-asset-sync.ts", import.meta.url)).text();
         expect(source).not.toContain("if (input.task.projectId) await syncAssetToProject(assetId, input.task.projectId");
-        expect(source).toContain("if (!options.domainProjectId) return");
+        // 守卫已经改成代码块形式（缺少 domainProjectId 时提前返回 linkedToProject: false），
+        // 断言只钉住“没有领域项目就不建关联”这个意图，不钉住单行写法。
+        expect(source).toContain("if (!options.domainProjectId) {");
+        expect(source).toContain("return { assetId: asset.id, created, linkedToProject: false };");
         expect(source).toContain("await syncAssetToProject(asset.id, options.domainProjectId");
     });
 

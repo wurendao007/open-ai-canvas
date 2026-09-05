@@ -38,6 +38,7 @@ const LoginPage = lazy(() => import("@/pages/auth/login"));
 const RegisterPage = lazy(() => import("@/pages/auth/register"));
 const ForgotPasswordPage = lazy(() => import("@/pages/auth/forgot-password"));
 const MCPDevicePage = lazy(() => import("@/pages/mcp/device"));
+const KraftReelCliPage = lazy(() => import("@/pages/cli"));
 const CanvasPage = lazy(loadCanvasPage);
 const CanvasProjectPage = lazy(loadCanvasProjectPage);
 const SharedCanvasPage = lazy(() => import("@/pages/canvas/shared"));
@@ -59,6 +60,10 @@ function deferred(element: ReactNode) {
 
 function fullScreenDeferred(element: ReactNode) {
     return <Suspense fallback={<FullScreenLoader label="正在打开创作空间" detail="准备当前页面" />}>{element}</Suspense>;
+}
+
+function publicCliDeferred(element: ReactNode) {
+    return <Suspense fallback={<FullScreenLoader label="正在打开 KraftReel CLI" detail="准备安装与 MCP 指南" />}>{element}</Suspense>;
 }
 
 /**
@@ -90,6 +95,7 @@ export const router = createBrowserRouter([
     },
     { path: "/share/canvas/:token", element: fullScreenDeferred(<SharedCanvasPage />), errorElement: <RouteErrorPage /> },
     { path: "/mcp/device", element: fullScreenDeferred(<MCPDevicePage />), errorElement: <RouteErrorPage /> },
+    { path: "/cli", element: publicCliDeferred(<KraftReelCliPage />), errorElement: <RouteErrorPage /> },
     ...(import.meta.env.DEV ? devRoutes() : []),
     {
         element: (

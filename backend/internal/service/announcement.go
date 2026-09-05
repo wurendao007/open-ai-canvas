@@ -125,7 +125,8 @@ func (s *Service) UpdateAnnouncement(actor *model.User, id string, req UpdateAnn
 			}
 			return nil, err
 		}
-		if err := s.ensureResourceHasNoBusinessReferences(oldResource); err != nil {
+		// 旧配图此刻仍挂在这条公告上，本次更新正要解除这层引用；除它以外的引用仍要拦住删除。
+		if err := s.ensureResourceHasNoBusinessReferences(oldResource, announcementReferenceExemption{announcementID: announcement.ID}); err != nil {
 			return nil, err
 		}
 		sharedCount, countErr := s.repo.ResourceStorageReferenceCount(oldResource, []string{oldResource.ID})
@@ -316,7 +317,8 @@ func (s *Service) discardAnnouncementImageDraft(userID string, resourceID string
 		}
 		return err
 	}
-	if err := s.ensureResourceHasNoBusinessReferences(resource); err != nil {
+	// 撤回草稿时那条草稿记录本身就是唯一合法引用，排除它；已发布公告等其他引用仍要拦住。
+	if err := s.ensureResourceHasNoBusinessReferences(resource, announcementReferenceExemption{draftResourceID: resource.ID}); err != nil {
 		return err
 	}
 	sharedCount, err := s.repo.ResourceStorageReferenceCount(resource, []string{resource.ID})
@@ -340,7 +342,26 @@ func (s *Service) discardAnnouncementImageDraft(userID string, resourceID string
 	return nil
 }
 
-func (s *Service) ensureResourceHasNoBusinessReferences(resource *model.Resource) error {
+// announcementReferenceExemption 描述本次操作自己正在移除的那条引用：替换公告配图时
+// 是公告记录本身，撤回草稿时是该草稿记录。引用快照现在会如实报告公告与公告草稿，
+// 若不排除自身引用，删除旧配图或撤回草稿都会被自己拦下。除此之外的任何引用仍必须阻止删除。
+type announcementReferenceExemption struct {
+	announcementID  string
+	draftResourceID string
+}
+
+func (e announcementReferenceExemption) covers(reference repository.ResourceDirectReference) bool {
+	switch reference.Kind {
+	case repository.ResourceReferenceKindAnnouncement:
+		return e.announcementID != "" && reference.ID == e.announcementID
+	case repository.ResourceReferenceKindAnnouncementDraft:
+		return e.draftResourceID != "" && reference.ResourceID == e.draftResourceID
+	default:
+		return false
+	}
+}
+
+func (s *Service) ensureResourceHasNoBusinessReferences(resource *model.Resource, exempt announcementReferenceExemption) error {
 	if resource == nil {
 		return NotFound("资源不存在")
 	}
@@ -348,8 +369,10 @@ func (s *Service) ensureResourceHasNoBusinessReferences(resource *model.Resource
 	if err != nil {
 		return err
 	}
-	if len(snapshot.Direct) > 0 {
-		return BadAuthRequest("公告配图仍被其他业务数据引用，已停止删除")
+	for _, reference := range snapshot.Direct {
+		if !exempt.covers(reference) {
+			return BadAuthRequest("公告配图仍被其他业务数据引用，已停止删除")
+		}
 	}
 	resourceIDs := map[string]struct{}{resource.ID: {}}
 	for _, document := range snapshot.Documents {
@@ -448,8 +471,8 @@ func validAnnouncementLevel(level model.AnnouncementLevel) bool {
 func normalizeAnnouncementInput(req CreateAnnouncementRequest) (string, string, model.AnnouncementLevel, error) {
 	title := strings.TrimSpace(req.Title)
 	content := strings.TrimSpace(req.Content)
-	if title == "" || content == "" {
-		return "", "", "", BadAuthRequest("请填写公告标题和正文")
+	if title == "" {
+		return "", "", "", BadAuthRequest("请填写公告标题")
 	}
 	if utf8.RuneCountInString(title) > 120 {
 		return "", "", "", BadAuthRequest("公告标题不能超过 120 个字符")

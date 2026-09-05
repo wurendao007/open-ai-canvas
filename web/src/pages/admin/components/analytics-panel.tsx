@@ -206,7 +206,8 @@ export default function AnalyticsPanel({ users, channels }: Props) {
         const currentChannelId = form.getFieldValue("channelId") as string | undefined;
         const matchingChannels = channels.filter((channel) => channel.enabled !== false && channel.models?.includes(modelName));
         const matchingChannel = matchingChannels.find((channel) => channel.id === currentChannelId) || matchingChannels[0];
-        form.setFieldsValue({ model: modelName, channelId: matchingChannel?.id || currentChannelId });
+        const nextChannelId = matchingChannel?.id || currentChannelId;
+        form.setFieldsValue({ model: modelName, channelId: nextChannelId });
     };
 
     const savePricing = async () => {
@@ -620,7 +621,7 @@ export default function AnalyticsPanel({ users, channels }: Props) {
                 rootClassName="admin-secondary-drawer admin-analytics-pricing-drawer"
                 title="模型价格配置"
                 open={pricingWorkspaceOpen}
-                width="min(1120px, calc(100vw - 48px))"
+                size="min(1120px, calc(100vw - 48px))"
                 onClose={() => setPricingWorkspaceOpen(false)}
                 afterOpenChange={(open) => {
                     if (open || pendingPricing === undefined) return;
@@ -654,6 +655,7 @@ export default function AnalyticsPanel({ users, channels }: Props) {
                 cancelText="取消"
                 width={760}
                 zIndex={1200}
+                forceRender
                 destroyOnHidden
             >
                 <Form form={form} layout="vertical" requiredMark={false} onValuesChange={handlePricingValuesChange}>

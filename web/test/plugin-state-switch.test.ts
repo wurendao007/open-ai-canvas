@@ -6,10 +6,15 @@ describe("plugin state switches", () => {
     test("uses a page-scoped green and neutral switch palette", () => {
         const styles = readFileSync(resolve(import.meta.dir, "../src/styles/globals.css"), "utf8");
 
-        expect(styles).toContain("--plugin-switch-checked-bg: #15803d;");
-        expect(styles).toContain("--plugin-switch-checked-bg: #16a34a;");
-        expect(styles).toContain("--plugin-switch-off-bg: #d4d4d8;");
-        expect(styles).toContain("--plugin-switch-off-bg: #3f3f46;");
+        // 插件页开关消费统一的主题开关合同（control-switch），不再维护脱离主题的固定色。
+        expect(styles).toContain("--plugin-switch-checked-bg: var(--control-switch-checked-bg);");
+        expect(styles).toContain("--plugin-switch-off-bg: var(--control-switch-off-bg);");
+        // 浅色主题的开关色板：常态亮绿、悬停转深绿。
+        expect(styles).toContain("--control-switch-checked-bg: #16a34a;");
+        expect(styles).toContain("--control-switch-checked-hover-bg: #15803d;");
+        // 深色主题的开关色板：亮绿态与中性灰态。
+        expect(styles).toContain("--control-switch-checked-bg: #22c55e;");
+        expect(styles).toContain("--control-switch-off-bg: #525252;");
         expect(styles).toContain(":where(.plugin-state-switch.ant-switch.ant-switch-checked)");
         expect(styles).toContain(":where(.plugin-state-switch.ant-switch:not(.ant-switch-checked))");
     });

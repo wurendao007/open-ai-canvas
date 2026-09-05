@@ -5,7 +5,7 @@ import type { CanvasDrawingEngineSetting } from "@/lib/canvas/canvas-drawing-eng
 import type { FeatureAvailability } from "@/stores/use-user-store";
 import { apiClient, request } from "@/services/api/request";
 import type { PublicLogicalModel } from "@/services/api/logical-models";
-import type { OSSConnectionTestInput, OSSConnectionTestResult, OSSProvider, S3Preset } from "@/lib/oss-settings";
+import type { CDNAuthType, OSSConnectionTestInput, OSSConnectionTestResult, OSSProvider, S3Preset } from "@/lib/oss-settings";
 
 const api = apiClient;
 
@@ -276,6 +276,8 @@ export type AdminOSSSetting = {
     region: string;
     endpoint: string;
     cdnBaseUrl: string;
+    cdnAuthType: CDNAuthType;
+    hasCdnAuthKey: boolean;
     bucket: string;
     accessKeyId: string;
     accessKeySecret?: string;
@@ -293,6 +295,12 @@ export type AdminOSSSetting = {
     updatedBy?: string;
     createdAt?: string;
     updatedAt?: string;
+};
+
+export type AdminOSSSettingInput = Pick<AdminOSSSetting, "enabled" | "provider" | "s3Preset" | "region" | "endpoint" | "cdnBaseUrl" | "cdnAuthType" | "bucket" | "accessKeyId" | "publicBaseUrl" | "pathPrefix" | "pathStyle" | "allowUserS3"> & {
+    accessKeySecret?: string;
+    sessionToken?: string;
+    cdnAuthKey?: string;
 };
 
 export type AdminArkPrivateAssetSetting = {
@@ -528,7 +536,7 @@ export function getAdminOSSSetting() {
     return request<{ setting: AdminOSSSetting }>(api.get("/admin/settings/oss"));
 }
 
-export function updateAdminOSSSetting(input: Partial<AdminOSSSetting>) {
+export function updateAdminOSSSetting(input: AdminOSSSettingInput) {
     return request<{ setting: AdminOSSSetting }>(api.patch("/admin/settings/oss", input));
 }
 

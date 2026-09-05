@@ -334,6 +334,7 @@ export default function LogicalModelsPage() {
                 title={editingModel ? "编辑前台模型" : "新增前台模型"}
                 open={editingModel !== undefined}
                 size="min(1120px, 100vw)"
+                forceRender
                 destroyOnHidden
                 mask={{ closable: !saving }}
                 onClose={() => !saving && setEditingModel(undefined)}

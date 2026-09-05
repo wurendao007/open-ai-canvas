@@ -917,6 +917,12 @@ func (r *Repository) StorageLocationByDigest(scope string, ownerID string, provi
 	return &location, nil
 }
 
+func (r *Repository) StorageLocationsForScope(scope string, ownerID string) ([]model.StorageLocation, error) {
+	var locations []model.StorageLocation
+	err := r.db.Where("scope = ? AND owner_id = ?", scope, ownerID).Order("created_at desc, id desc").Find(&locations).Error
+	return locations, err
+}
+
 func (r *Repository) StorageLocationHistoryCount(scope string, ownerID string) (int64, error) {
 	var count int64
 	err := r.db.Model(&model.StorageLocation{}).Where("scope = ? AND owner_id = ?", scope, ownerID).Count(&count).Error
@@ -1059,6 +1065,36 @@ func (r *Repository) Resources(userID string, limit int) ([]model.Resource, erro
 	}
 	err := r.db.Order("created_at desc").Limit(limit).Find(&resources, "user_id = ?", userID).Error
 	return resources, err
+}
+
+func (r *Repository) PlaybackPendingVideos(limit int) ([]model.Resource, error) {
+	var resources []model.Resource
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	err := r.db.Where("kind = ? AND status = ? AND provider = ? AND (playback_status = ? OR playback_status IS NULL)", "video", model.ResourceStatusReady, "local", "").Order("created_at asc").Limit(limit).Find(&resources).Error
+	return resources, err
+}
+
+func (r *Repository) PlaybackNoneVideos(limit int) ([]model.Resource, error) {
+	var resources []model.Resource
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	err := r.db.Where("kind = ? AND status = ? AND provider = ? AND playback_status = ?", "video", model.ResourceStatusReady, "local", model.PlaybackStatusNone).Order("created_at asc").Limit(limit).Find(&resources).Error
+	return resources, err
+}
+
+func (r *Repository) ClaimPlaybackTranscode(id string) (bool, error) {
+	res := r.db.Model(&model.Resource{}).Where("id = ? AND (playback_status = ? OR playback_status IS NULL OR playback_status = ?)", id, "", model.PlaybackStatusNone).Updates(map[string]any{"playback_status": model.PlaybackStatusProcessing, "playback_error": ""})
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
+}
+
+func (r *Repository) ResetStuckPlaybackTranscodes() error {
+	return r.db.Model(&model.Resource{}).Where("playback_status = ?", model.PlaybackStatusProcessing).Updates(map[string]any{"playback_status": "", "playback_error": ""}).Error
 }
 
 func (r *Repository) ResourceCleanupCandidates(incompleteBefore time.Time, readyBefore time.Time, limit int) ([]model.Resource, error) {
@@ -1651,6 +1687,12 @@ func (r *Repository) DeleteProjectAssetFolder(projectID string, folderID string)
 func (r *Repository) LinkProjectAsset(asset *model.Asset, version *model.AssetVersion, link *model.ProjectAssetLink) (bool, error) {
 	createdLink := false
 	err := r.db.Transaction(func(tx *gorm.DB) error {
+		if asset != nil {
+			createdAsset := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoNothing: true}).Create(asset)
+			if createdAsset.Error != nil {
+				return createdAsset.Error
+			}
+		}
 		created := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "project_id"}, {Name: "asset_id"}}, DoNothing: true}).Create(link)
 		if created.Error != nil {
 			return created.Error

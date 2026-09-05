@@ -220,6 +220,7 @@ export default function ChannelsPage() {
                 width={760}
                 onCancel={closeDrawer}
                 mask={{ closable: !saving }}
+                forceRender
                 destroyOnHidden
                 footer={<div className="flex justify-end gap-2"><Button onClick={closeDrawer}>取消</Button><Button type="primary" loading={saving} onClick={() => void save()}>保存</Button></div>}
             >

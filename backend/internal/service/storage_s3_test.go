@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -96,6 +97,25 @@ func TestSignedS3ObjectURLUsesSDKPresignAndSessionToken(t *testing.T) {
 	}
 }
 
+func TestSignedS3ObjectURLUsesConfiguredPublicDomain(t *testing.T) {
+	value, err := signedOSSObjectURL(ossSettingValue{
+		Provider: s3Provider, CDNBaseURL: "https://media.example.com", Bucket: "bucket",
+	}, "folder/object image.png", time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.String() != "https://media.example.com/folder/object%20image.png" {
+		t.Fatalf("public S3 URL = %q", value)
+	}
+	if parsed.RawQuery != "" {
+		t.Fatalf("public S3 URL unexpectedly signed = %q", value)
+	}
+}
+
 func TestS3EndpointAndDigestsEnforceStorageContract(t *testing.T) {
 	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "storage.internal")
 	if _, err := validateStorageEndpoint("https://example.com/path"); err == nil {
@@ -178,5 +198,40 @@ func TestResourceObjectKeyPreservesOrInfersExtension(t *testing.T) {
 				t.Fatalf("object key = %q, want suffix %q", objectKey, test.ext)
 			}
 		})
+	}
+}
+
+func TestResourceObjectKeyDoesNotExposeBusinessPath(t *testing.T) {
+	setting := ossSettingValue{PathPrefix: "assets"}
+	now := time.Date(2026, time.August, 27, 20, 31, 0, 0, time.UTC)
+	first := ossObjectKey(setting, "user-secret-123", "image", "我的原图.png", "image/png", now)
+	second := ossObjectKey(setting, "user-secret-123", "image", "我的原图.png", "image/png", now)
+
+	if first == second {
+		t.Fatalf("object keys must be unique: %q", first)
+	}
+	for _, leaked := range []string{"user-secret-123", "image", "我的原图", "2026/08/27"} {
+		if strings.Contains(first, leaked) {
+			t.Fatalf("object key %q exposes %q", first, leaked)
+		}
+	}
+	if !strings.HasPrefix(first, "assets/objects/") {
+		t.Fatalf("object key = %q, want assets/objects prefix", first)
+	}
+	if !regexp.MustCompile(`^assets/objects/[a-f0-9]{2}/[a-f0-9]{32}\.png$`).MatchString(first) {
+		t.Fatalf("object key = %q, want opaque sharded key", first)
+	}
+}
+
+func TestLocalResourceObjectKeyDoesNotExposeBusinessPath(t *testing.T) {
+	now := time.Date(2026, time.August, 27, 20, 31, 0, 0, time.UTC)
+	key := localObjectKey("user-secret-123", "image", "我的原图.png", "image/png", now)
+	for _, leaked := range []string{"user-secret-123", "image", "我的原图", "2026/08/27"} {
+		if strings.Contains(key, leaked) {
+			t.Fatalf("local object key %q exposes %q", key, leaked)
+		}
+	}
+	if !regexp.MustCompile(`^objects/[a-f0-9]{2}/[a-f0-9]{32}\.png$`).MatchString(key) {
+		t.Fatalf("local object key = %q, want opaque sharded key", key)
 	}
 }

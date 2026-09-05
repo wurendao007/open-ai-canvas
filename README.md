@@ -94,8 +94,8 @@ Issue 反馈、技术讨论和产品升级建议都可以在 QQ 群中沟通。�
   ├─ 异步任务 worker、资源存储、权限和模型中转
   └─ provider/outbound -> 外部模型渠道
 
-本地 Agent（canvas-agent/） <-> 浏览器画布 <-> Codex MCP / 本机 CLI
-Codex 插件（`plugins/yingce/`）负责把 MCP 接入 Codex App。
+远程 KraftReel CLI（canvas-agent/） <-> 浏览器画布 <-> Codex MCP
+Codex 插件（`plugins/kraftreel/`）负责把 MCP 接入 Codex App。
 ```
 
 前端默认把 `/api` 代理到 `http://127.0.0.1:8080`；生产环境由网页容器的 Nginx 代理到后端，只有 web 的 `3000` 端口需要对外暴露。系统模型和文本任务的 SSE 只在明确的流式路径关闭代理缓冲，详见 [`nginx.conf`](nginx.conf) 和 [SSE 文档](docs/content/docs/overview/docker.mdx)。
@@ -228,24 +228,27 @@ sudo docker compose --env-file .env -f docker-compose.deploy.yml up -d --force-r
 
 安全问题请按 [`SECURITY.md`](SECURITY.md) 报告，不要在公开 Issue 中粘贴密钥、Cookie、数据库或生产日志。
 
-## Canvas Agent 和 Codex 插件
+## KraftReel CLI 和 Codex 插件
 
-本地 Agent 用来连接网页画布与本机 Codex/CLI：
+KraftReel CLI 通过 HTTPS 连接远程画布，不启动本机 HTTP Runtime。生产服务地址默认为 `https://kraftreel.com`，不需要用户设置环境变量：
 
-```bash
-npx -y @ddcat666/open-ai-canvas-agent
-```
+浏览器访问 [`https://kraftreel.com/cli`](https://kraftreel.com/cli)（本地开发为 `http://localhost:3000/cli`）可查看独立安装页。页面默认提供“通过 AI Agent 安装”模式，提示词会下载构建生成的 `kraftreel-cli-skill.zip`；“手动安装”仅作为备用。
 
-仓库内开发构建：
+首次授权只需执行：
 
 ```bash
-cd canvas-agent
-npm install
-npm run build
-node dist/index.js
+kraftreel login web
+kraftreel project list
+kraftreel project use <canvas-project-id>
 ```
 
-启动后将终端输出的 Local URL 和 Connect token 填入画布右上角 Agent 面板。Agent 默认只监听 `127.0.0.1`，token 不应写入 URL、日志或任务正文。完整 MCP 工具、Codex App 插件安装和本地安全边界见 [`canvas-agent/README.md`](canvas-agent/README.md) 与 [`plugins/yingce/README.md`](plugins/yingce/README.md)。
+注册到 Codex CLI：
+
+```bash
+codex mcp add kraftreel -- kraftreel mcp
+```
+
+完整 MCP 工具、Codex App 插件安装和远程安全边界见 [`canvas-agent/README.md`](canvas-agent/README.md) 与 [`plugins/kraftreel/README.md`](plugins/kraftreel/README.md)。
 
 ## 验证命令
 

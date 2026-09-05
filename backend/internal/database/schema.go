@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 
@@ -166,7 +167,11 @@ func backfillCanvasStateHashes(db *gorm.DB) error {
 	for _, project := range projects {
 		hash, err := model.CanvasStateHash([]byte(project.PayloadJSON))
 		if err != nil {
-			return fmt.Errorf("回填画布 %s 状态摘要：%w", project.ID, err)
+			// Keep a malformed legacy snapshot intact so one historical row cannot
+			// abort the whole schema migration. MCP reads/writes validate the
+			// payload and will fail closed until the canvas is repaired in the UI.
+			log.Printf("WARN 跳过无效画布 %s 状态摘要回填：%v", project.ID, err)
+			continue
 		}
 		if err := db.Model(&model.CanvasProject{}).Where("id = ?", project.ID).Update("state_hash", hash).Error; err != nil {
 			return fmt.Errorf("保存画布 %s 状态摘要：%w", project.ID, err)

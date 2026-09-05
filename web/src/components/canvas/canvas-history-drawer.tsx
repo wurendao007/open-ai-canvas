@@ -87,7 +87,7 @@ export function CanvasHistoryDrawer({ open, onClose }: { open: boolean; onClose:
                 </div>
             }
             placement="right"
-            width={460}
+            size={460}
             open={open}
             onClose={onClose}
             className="workspace-drawer canvas-history-drawer"

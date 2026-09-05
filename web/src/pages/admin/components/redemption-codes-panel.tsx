@@ -54,18 +54,6 @@ export default function RedemptionCodesPanel({ createOpen, onCreateOpenChange, o
     const listRequestRef = useRef(0);
     const createInFlightRef = useRef(false);
     const batchMutationsRef = useRef(new Set<string>());
-    const watchedAmount = Form.useWatch("amount", form);
-    const watchedCount = Form.useWatch("count", form);
-
-    const draftTotal = useMemo(() => {
-        const amount = Number(watchedAmount);
-        const count = Number(watchedCount);
-        if (!Number.isFinite(amount) || amount <= 0 || !Number.isInteger(count) || count <= 0) return null;
-        const amountMicrocredits = Math.round(amount * MICRO_CREDITS_PER_CREDIT);
-        const totalMicrocredits = amountMicrocredits * count;
-        return Number.isSafeInteger(amountMicrocredits) && Number.isSafeInteger(totalMicrocredits) ? totalMicrocredits : null;
-    }, [watchedAmount, watchedCount]);
-
     const reload = async (targetPage = page, targetPageSize = pageSize, queryOverride?: { keyword?: string; validity?: BatchValidity }) => {
         const requestId = ++listRequestRef.current;
         const queryKeyword = (queryOverride?.keyword ?? debouncedKeyword).trim();
@@ -359,9 +347,6 @@ export default function RedemptionCodesPanel({ createOpen, onCreateOpenChange, o
                 creating={creating}
                 pending={pendingCreate}
                 form={form}
-                watchedAmount={watchedAmount}
-                watchedCount={watchedCount}
-                draftTotal={draftTotal}
                 onClose={closeCreateDrawer}
                 onPreview={previewCreate}
                 onPendingChange={setPendingCreate}
@@ -386,9 +371,6 @@ function CreateRedeemBatchDrawer({
     creating,
     pending,
     form,
-    watchedAmount,
-    watchedCount,
-    draftTotal,
     onClose,
     onPreview,
     onPendingChange,
@@ -398,14 +380,22 @@ function CreateRedeemBatchDrawer({
     creating: boolean;
     pending: PendingRedeemBatch | null;
     form: ReturnType<typeof Form.useForm<RedeemFormValues>>[0];
-    watchedAmount?: number | null;
-    watchedCount?: number | null;
-    draftTotal: number | null;
     onClose: () => void;
     onPreview: (values: RedeemFormValues) => void;
     onPendingChange: (values: PendingRedeemBatch | null) => void;
     onConfirm: () => void;
 }) {
+    const watchedAmount = Form.useWatch("amount", form);
+    const watchedCount = Form.useWatch("count", form);
+    const draftTotal = useMemo(() => {
+        const amount = Number(watchedAmount);
+        const count = Number(watchedCount);
+        if (!Number.isFinite(amount) || amount <= 0 || !Number.isInteger(count) || count <= 0) return null;
+        const amountMicrocredits = Math.round(amount * MICRO_CREDITS_PER_CREDIT);
+        const totalMicrocredits = amountMicrocredits * count;
+        return Number.isSafeInteger(amountMicrocredits) && Number.isSafeInteger(totalMicrocredits) ? totalMicrocredits : null;
+    }, [watchedAmount, watchedCount]);
+
     return (
         <>
             <Drawer
@@ -414,6 +404,7 @@ function CreateRedeemBatchDrawer({
                 size="min(600px, 100vw)"
                 onClose={onClose}
                 rootClassName="admin-drawer admin-redemption-drawer"
+                forceRender
                 destroyOnHidden
                 mask={{ closable: !creating && !pending }}
                 keyboard={!creating && !pending}

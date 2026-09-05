@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { resolveImageUrl } from "@/services/image-storage";
-import { resourceFallbackUrl, resourceIdFromStorageKey } from "@/services/api/resources";
+import { resourceFallbackUrl, resourceIdFromFileUrl, resourceIdFromStorageKey, resourceStorageKey } from "@/services/api/resources";
 
 type ResolvedPreview = {
     identity: string;
@@ -52,14 +52,20 @@ export function useResolvedCanvasResourceReferences(references: CanvasResourceRe
         () => references.map((reference) => {
             const identity = previewIdentity(reference);
             const resolved = identity ? resolvedById[reference.id] : undefined;
-            return resolved?.identity === identity && resolved.url !== reference.previewUrl ? { ...reference, previewUrl: resolved.url } : reference;
+            if (resolved?.identity === identity && resolved.url !== reference.previewUrl) return { ...reference, previewUrl: resolved.url };
+            // A persisted canvas can still carry the legacy same-origin
+            // `/api/resources/:id/file` URL. Do not mount it for one render
+            // while the Blob/direct provider URL is being resolved; every
+            // remount of the prompt panel would otherwise trigger a redirect.
+            if (identity && resourceIdForReferencePreview(reference)) return reference.previewUrl ? { ...reference, previewUrl: "" } : reference;
+            return reference;
         }),
         [references, resolvedById],
     );
 }
 
 function previewIdentity(reference: CanvasResourceReference) {
-    const storageKey = reference.kind === "video" ? reference.previewStorageKey : reference.storageKey;
+    const storageKey = referencePreviewStorageKey(reference);
     if (!storageKey || !["image", "video", "character"].includes(reference.kind)) return "";
     return `${reference.kind}:${storageKey}`;
 }
@@ -67,7 +73,7 @@ function previewIdentity(reference: CanvasResourceReference) {
 function resolveReferencePreview(reference: CanvasResourceReference, identity: string) {
     const cached = previewPromiseCache.get(identity);
     if (cached) return cached;
-    const storageKey = reference.kind === "video" ? reference.previewStorageKey : reference.storageKey;
+    const storageKey = referencePreviewStorageKey(reference);
     const resourceId = resourceIdFromStorageKey(storageKey);
     const fallback = resourceId ? resourceFallbackUrl(resourceId, reference.previewUrl || "") : reference.previewUrl || "";
     const pending = resolveImageUrl(storageKey, fallback, { cacheMiss: true, proxyFallback: false })
@@ -78,4 +84,15 @@ function resolveReferencePreview(reference: CanvasResourceReference, identity: s
         });
     previewPromiseCache.set(identity, pending);
     return pending;
+}
+
+function resourceIdForReferencePreview(reference: CanvasResourceReference) {
+    return resourceIdFromStorageKey(referencePreviewStorageKey(reference)) || resourceIdFromFileUrl(reference.previewUrl);
+}
+
+function referencePreviewStorageKey(reference: CanvasResourceReference) {
+    const storageKey = reference.kind === "video" ? reference.previewStorageKey : reference.storageKey;
+    if (storageKey) return storageKey;
+    const resourceId = resourceIdFromFileUrl(reference.previewUrl);
+    return resourceId ? resourceStorageKey(resourceId) : "";
 }

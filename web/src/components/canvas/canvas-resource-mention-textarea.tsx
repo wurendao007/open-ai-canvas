@@ -9,7 +9,6 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import { buildAssetMentionReferences, canvasResourceMentionToken, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { useAssetStore, type AssetCategory } from "@/stores/use-asset-store";
 import { CanvasNodeType } from "@/types/canvas";
-import { ResolvedResourceVideoSource } from "@/components/resolved-resource-video";
 import { useResolvedCanvasResourceReferences } from "./use-resolved-canvas-resource-references";
 
 type MentionState = {
@@ -686,7 +685,7 @@ function ReferencePreview({ reference }: { reference: CanvasResourceReference })
     if (reference.kind === "image" && reference.previewUrl) return <img src={reference.previewUrl} alt="" className="canvas-resource-mention-preview is-image" />;
     if (reference.kind === "video" && reference.previewUrl) return <img src={reference.previewUrl} alt="" className="canvas-resource-mention-preview is-video" loading="lazy" decoding="async" />;
     if (reference.kind === "video" && reference.mediaUrl) {
-        return <ResolvedResourceVideoSource src={reference.mediaUrl} aria-hidden="true" muted playsInline preload="metadata" className="canvas-resource-mention-preview is-video" onLoadedMetadata={(event) => primeVideoPreviewFrame(event.currentTarget)} />;
+        return <video src={reference.mediaUrl} aria-hidden="true" muted playsInline preload="metadata" className="canvas-resource-mention-preview is-video" onLoadedMetadata={(event) => primeVideoPreviewFrame(event.currentTarget)} />;
     }
     if (reference.kind === "character" && reference.previewUrl) return <img src={reference.previewUrl} alt="" className="canvas-resource-mention-preview is-character" />;
     if (reference.kind === "skill") {

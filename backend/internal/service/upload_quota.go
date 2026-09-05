@@ -18,6 +18,14 @@ func (s *Service) reserveUserUploadQuota(userID string, size int64) (string, err
 	return s.reserveUserStoredFileQuota(userID, size, megabytes(policy.Resource.ResourceUploadMB), megabytes(policy.Resource.DailyUploadMB), gigabytes(policy.Resource.StoredFileGB), fmt.Sprintf("单个上传文件必须小于 %dMB", policy.Resource.ResourceUploadMB))
 }
 
+func (s *Service) reserveChunkedUploadQuota(userID string, size int64) (string, error) {
+	policy, err := s.RuntimePolicy()
+	if err != nil {
+		return "", err
+	}
+	return s.reserveUserStoredFileQuota(userID, size, size+1, megabytes(policy.Resource.DailyUploadMB), gigabytes(policy.Resource.StoredFileGB), "")
+}
+
 func (s *Service) reserveSessionUploadQuota(userID string, size int64) (string, error) {
 	policy, err := s.RuntimePolicy()
 	if err != nil {

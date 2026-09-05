@@ -15,6 +15,15 @@ import (
 	"gorm.io/gorm"
 )
 
+// 部分用例校验的是 header 存取、并发回退、SKU 映射与续跑判定，而不是出网 SSRF 策略；
+// 但这些路径都会对 BaseURL 做真实 DNS 解析，而部分开发与 CI 环境的 DNS 会把公网域名
+// 劫持到保留网段（如 198.18.0.0/15 或 ULA），命中出网防护。这里只按主机名放行用例
+// 用到的固定域名，不整体关闭 SSRF 防护。
+func allowTestUpstreamHosts(t *testing.T) {
+	t.Helper()
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "example.com,ark.cn-beijing.volces.com")
+}
+
 func TestChannelFromRequestStoresConnectionWithoutDefaultProtocol(t *testing.T) {
 	channel, err := channelFromRequest(ChannelRequest{
 		Name:             "混合模型渠道",
@@ -53,6 +62,7 @@ func TestMergeChannelRequestSupportsEnabledOnlyPatch(t *testing.T) {
 }
 
 func TestChannelFromRequestStoresAndClearsHeaders(t *testing.T) {
+	allowTestUpstreamHosts(t)
 	request := ChannelRequest{Name: "Headers", BaseURL: "https://example.com/v1", Headers: []OutboundHeader{{Name: "User-Agent", Value: "Custom Agent"}}}
 	channel, err := channelFromRequest(request, model.ModelChannel{})
 	if err != nil {
@@ -94,6 +104,7 @@ func TestChannelFromRequestRejectsInvalidConcurrencyLimit(t *testing.T) {
 }
 
 func TestRuntimeConcurrencyUsesEnvironmentFallback(t *testing.T) {
+	allowTestUpstreamHosts(t)
 	t.Setenv("CANVAS_CHANNEL_CONCURRENCY", "7")
 	t.Setenv("CANVAS_WORKER_CONCURRENCY", "9")
 	setting := defaultRuntimePolicy().Task
@@ -176,6 +187,7 @@ func TestSaveAdminChannelModelRejectsActiveDuplicateKey(t *testing.T) {
 }
 
 func TestResolveProviderConfigMapsSKUToProviderModel(t *testing.T) {
+	allowTestUpstreamHosts(t)
 	svc, db := newChannelModelTestService(t)
 	svc.dataDir = t.TempDir()
 	channel := model.ModelChannel{

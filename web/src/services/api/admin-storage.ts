@@ -96,17 +96,8 @@ export async function getAdminResourceDirectUrl(id: string) {
     return result.url;
 }
 
-export async function downloadAdminResource(resource: AdminStorageResource) {
-    const response = await fetch(adminResourceFileUrl(resource.id, true), { credentials: "include" });
-    if (!response.ok) {
-        let message = "下载资源失败";
-        try {
-            const body = (await response.json()) as { msg?: string };
-            if (body.msg) message = body.msg;
-        } catch {
-            // 文件接口失败时不保证返回 JSON。
-        }
-        throw new Error(message);
-    }
-    return response.blob();
+export function downloadAdminResource(resource: AdminStorageResource) {
+    const anchor = document.createElement("a");
+    anchor.href = adminResourceFileUrl(resource.id, true);
+    anchor.click();
 }

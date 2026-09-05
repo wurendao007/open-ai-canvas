@@ -4,7 +4,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useSearchParams } from "react-router";
 import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { uploadMediaFile } from "@/services/file-storage";
-import { readLocalRuntimeBootstrapState } from "@/services/local-runtime-bootstrap";
 import { createCanvasGenerationLiveProjectAdapter, registerCanvasGenerationLiveProject } from "@/services/canvas-generation-consumer";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, syncResourceToArkPrivateAsset } from "@/services/api/resources";
@@ -17,7 +16,6 @@ import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
 import { persistCanvasMediaPerformanceMode, readCanvasMediaPerformanceMode } from "@/lib/canvas/canvas-performance-mode";
 import { summarizeCanvasContext } from "@/lib/canvas/canvas-context-summary";
 import { refreshCanvasCharacterReferenceNodes } from "@/lib/canvas/canvas-character-reference";
-import { shouldAutoConnectCanvasRuntime } from "@/lib/canvas/local-runtime-connection";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { flushCanvasStorePersistence } from "@/stores/canvas/use-canvas-store";
 import { ensureCanvasNodeAsset } from "@/services/project-asset-sync";
@@ -65,9 +63,7 @@ import { CanvasScriptEditor, CanvasScriptNodeContent } from "@/components/canvas
 import { STORYBOARD_HEADER_HEIGHT, STORYBOARD_ROW_HEIGHT, storyboardMinNodeHeight, storyboardTableHeight } from "@/lib/canvas/canvas-storyboard-layout";
 import { CanvasDirectorNodePanel } from "@/components/canvas/director/canvas-director-node-panel";
 import { CanvasVersionCompareModal } from "@/components/canvas/canvas-version-compare-modal";
-import { CanvasLocalAgentPanel } from "@/components/canvas/canvas-local-agent-panel";
 import { useFocusMode } from "@/hooks/use-focus-mode";
-import { useCanvasAgentStore } from "@/stores/canvas/use-canvas-agent-store";
 import { getContextResourceNodes, normalizeCanvasNodeMentionTokens, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { CanvasConnectionCreateMenu, CanvasNodePanelOverlay } from "@/components/canvas/canvas-workspace-overlays";
 import { CanvasOverlayLayerContainer, CanvasOverlayLayerProvider } from "@/components/canvas/canvas-overlay-layer";
@@ -94,7 +90,6 @@ import { CanvasProjectStatusDialogs } from "./canvas-project-status-dialogs";
 import { CanvasProjectWorldLayers } from "./canvas-project-world-layers";
 import { CanvasNodeActionContext, type CanvasNodeActionContextValue } from "@/components/canvas/canvas-node-action-context";
 import { bringCanvasNodeToFront, type CanvasNodeStackOrder } from "@/lib/canvas/canvas-node-stack-order";
-import { PortraitClearanceModal } from "@/components/canvas/portrait-clearance/portrait-clearance-modal";
 import { AiArtCritiqueModal } from "@/components/canvas/art-critique/ai-art-critique-modal";
 import { CanvasNodeGraphContext, type CanvasNodeGraphContextValue } from "@/components/canvas/canvas-node-graph-context";
 import { CanvasRefreshShell } from "./canvas-refresh-shell";
@@ -124,7 +119,6 @@ import { useCanvasShortDrama } from "./use-canvas-short-drama";
 import { useCanvasStoryboard } from "./use-canvas-storyboard";
 import { useCanvasUpload } from "./use-canvas-upload";
 import { useCanvasViewportController } from "./use-canvas-viewport-controller";
-import { usePortraitClearanceCoordinator } from "./use-portrait-clearance-coordinator";
 import {
     CanvasNodeType,
     type CanvasAssistantSession,
@@ -145,9 +139,6 @@ import {
     type ViewportTransform,
 } from "@/types/canvas";
 import type { ReferenceImage } from "@/types/image";
-import type { PortraitClearanceNodeState } from "@/lib/portrait-clearance/contracts";
-import { createDefaultPortraitClearanceState, PORTRAIT_CLEARANCE_NODE_TYPE } from "@/lib/portrait-clearance/contracts";
-import { reconcilePortraitClearanceInputBindings } from "@/lib/portrait-clearance/input-bindings";
 import { ART_CRITIQUE_NODE_TYPE } from "@/lib/art-critique/contracts";
 
 const CanvasDirectorWorkbench = lazy(() => import("@/components/canvas/director/canvas-director-workbench").then((module) => ({ default: module.CanvasDirectorWorkbench })));
@@ -208,9 +199,6 @@ function InfiniteCanvasPage() {
     const [searchParams, setSearchParams] = useSearchParams();
     const projectId = params.id || "";
     const canvasStorageScope = getActiveUserScope();
-    const localAgentConnected = useCanvasAgentStore((state) => state.connected);
-    const localAgentActivity = useCanvasAgentStore((state) => state.activity);
-    const localAgentEnabled = useCanvasAgentStore((state) => state.enabled);
     const containerRef = useRef<HTMLDivElement>(null);
     const didInitialCenterRef = useRef(false);
     const toolbarHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -260,7 +248,7 @@ function InfiniteCanvasPage() {
     const [canvasAppearance, setCanvasAppearance] = useState<CanvasAppearance>(() => canvasAppearanceForTheme(colorTheme));
     const [backgroundMode, setBackgroundMode] = useState<CanvasBackgroundMode>(DEFAULT_CANVAS_BACKGROUND_MODE);
     const [showImageInfo, setShowImageInfo] = useState(false);
-    const [canvasTool, setCanvasTool] = useState<CanvasToolMode>("move");
+    const [canvasTool, setCanvasTool] = useState<CanvasToolMode>("box-select");
     const [mediaPerformanceMode, setMediaPerformanceMode] = useState<CanvasMediaPerformanceMode>(readCanvasMediaPerformanceMode);
     const [projectLoaded, setProjectLoaded] = useState(false);
     const [workspaceMode, setWorkspaceMode] = useState<CanvasWorkspaceMode>(readCanvasWorkspaceMode);
@@ -288,14 +276,11 @@ function InfiniteCanvasPage() {
     const [superResolveNodeId, setSuperResolveNodeId] = useState<string | null>(null);
     const [previewNodeId, setPreviewNodeId] = useState<string | null>(null);
     const [scriptEditorNodeId, setScriptEditorNodeId] = useState<string | null>(null);
-    const [portraitClearanceNodeId, setPortraitClearanceNodeId] = useState<string | null>(null);
     const [artCritiqueNodeId, setArtCritiqueNodeId] = useState<string | null>(null);
     const [scriptScrollTopById, setScriptScrollTopById] = useState<Record<string, number>>({});
     const [directorNodeId, setDirectorNodeId] = useState<string | null>(null);
     const [versionCompareRootId, setVersionCompareRootId] = useState<string | null>(null);
     const [libTVImportOpen, setLibTVImportOpen] = useState(false);
-    const codexAutoConnect = shouldAutoConnectCanvasRuntime(searchParams);
-    const codexCompactAgent = codexAutoConnect && readLocalRuntimeBootstrapState().legacyDeepLinkRejected;
     const [titleEditing, setTitleEditing] = useState(false);
     const [titleDraft, setTitleDraft] = useState("");
     const [shortcutRequestNonce, setShortcutRequestNonce] = useState(0);
@@ -317,7 +302,7 @@ function InfiniteCanvasPage() {
         window.addEventListener("resize", clamp);
         return () => window.removeEventListener("resize", clamp);
     }, []);
-    const { agentMode, assistantClosing, assistantMounted, assistantOpen, closeAgent, openAgent, setAgentMode } = useCanvasAssistantVisibility();
+    const { assistantClosing, assistantMounted, assistantOpen, closeAgent, openAgent } = useCanvasAssistantVisibility();
     const { tasks: activeTasks } = useCanvasActiveTasks(projectId, projectLoaded);
     const { focusMode, enterFocusMode, exitFocusMode, toggleFocusMode } = useFocusMode();
     const [focusDockRevealed, setFocusDockRevealed] = useState(false);
@@ -542,15 +527,6 @@ function InfiniteCanvasPage() {
         },
         [bindGenerationTask, message, nodesRef, projectId, queryClient, setTaskDetail],
     );
-
-    useEffect(() => {
-        if (!projectLoaded || !codexAutoConnect) return;
-        if (codexCompactAgent) {
-            setAgentMode("local");
-            return;
-        }
-        openAgent("local");
-    }, [codexAutoConnect, codexCompactAgent, openAgent, projectLoaded, setAgentMode]);
 
     // 沉浸专注进入时收起智能体与小地图、重置 Dock 唤出态；仅响应「进入」瞬间，避免关闭专注内主动唤出的面板。
     const prevFocusModeRef = useRef(focusMode);
@@ -920,7 +896,6 @@ function InfiniteCanvasPage() {
             setPreviewNodeId(clearDeletedId);
             setRunningNodeId(clearDeletedId);
             setScriptEditorNodeId(clearDeletedId);
-            setPortraitClearanceNodeId(clearDeletedId);
             setArtCritiqueNodeId(clearDeletedId);
             setDirectorNodeId(clearDeletedId);
             setVersionCompareRootId(clearDeletedId);
@@ -1031,9 +1006,6 @@ function InfiniteCanvasPage() {
             setDialogNodeId(null);
         } else if (node.type === CanvasNodeType.Text || node.type === CanvasNodeType.Frame) {
             setDialogNodeId((current) => (current === node.id ? current : null));
-        } else if (node.type === PORTRAIT_CLEARANCE_NODE_TYPE) {
-            setDialogNodeId(null);
-            setPortraitClearanceNodeId(node.id);
         } else if (node.type === ART_CRITIQUE_NODE_TYPE) {
             setDialogNodeId(null);
             setArtCritiqueNodeId(node.id);
@@ -1054,7 +1026,7 @@ function InfiniteCanvasPage() {
 
     const handleNodeDragEnd = useCallback((nodeId: string) => {
         const node = nodesRef.current.find((item) => item.id === nodeId);
-        if (!node || node.type === CanvasNodeType.Script || node.type === CanvasNodeType.Drawing || node.type === PORTRAIT_CLEARANCE_NODE_TYPE || node.type === ART_CRITIQUE_NODE_TYPE) {
+        if (!node || node.type === CanvasNodeType.Script || node.type === CanvasNodeType.Drawing || node.type === ART_CRITIQUE_NODE_TYPE) {
             setDialogNodeId(null);
             return;
         }
@@ -1142,26 +1114,6 @@ function InfiniteCanvasPage() {
         setToolbarNodeId,
         setHoveredNodeId,
     });
-
-    const handlePortraitClearanceStateUpdate = useCallback((nodeId: string, state: PortraitClearanceNodeState) => {
-        handleConfigNodeChange(nodeId, { portraitClearance: state });
-    }, [handleConfigNodeChange]);
-    usePortraitClearanceCoordinator({ nodes, onUpdateState: handlePortraitClearanceStateUpdate });
-
-    useEffect(() => {
-        setNodes((current) => {
-            let changed = false;
-            const next = current.map((node) => {
-                if (node.type !== PORTRAIT_CLEARANCE_NODE_TYPE) return node;
-                const state = node.metadata?.portraitClearance || createDefaultPortraitClearanceState();
-                const inputBindings = reconcilePortraitClearanceInputBindings(node.metadata?.portraitClearance?.mode || state.mode, node.id, connections, current, state.inputBindings);
-                if (JSON.stringify(inputBindings) === JSON.stringify(state.inputBindings) && node.metadata?.portraitClearance) return node;
-                changed = true;
-                return { ...node, metadata: { ...node.metadata, portraitClearance: { ...state, inputBindings } } };
-            });
-            return changed ? next : current;
-        });
-    }, [connections, setNodes]);
 
     const handleRemoveNodeReference = useCallback((targetNodeId: string, reference: CanvasResourceReference) => {
         const referenceNodeId = reference.nodeId;
@@ -1335,15 +1287,7 @@ function InfiniteCanvasPage() {
     const textEditorNode = textEditorNodeId ? nodeById.get(textEditorNodeId) || null : null;
     const characterReferenceNode = characterReferenceNodeId ? nodeById.get(characterReferenceNodeId) || null : null;
     const drawingNode = drawingNodeId ? nodeById.get(drawingNodeId) || null : null;
-    const portraitClearanceNode = portraitClearanceNodeId ? nodeById.get(portraitClearanceNodeId) || null : null;
     const artCritiqueNode = artCritiqueNodeId ? nodeById.get(artCritiqueNodeId) || null : null;
-    const portraitClearanceInputs = portraitClearanceNode
-        ? connections
-              .filter((connection) => connection.toNodeId === portraitClearanceNode.id)
-              .sort((left, right) => left.id.localeCompare(right.id))
-              .map((connection) => nodeById.get(connection.fromNodeId))
-              .filter((node): node is CanvasNodeData => Boolean(node))
-        : [];
     const artCritiqueInputs = artCritiqueNode
         ? connections
               .filter((connection) => connection.toNodeId === artCritiqueNode.id)
@@ -1351,24 +1295,6 @@ function InfiniteCanvasPage() {
               .map((connection) => nodeById.get(connection.fromNodeId))
               .filter((node): node is CanvasNodeData => Boolean(node))
         : [];
-    const addPortraitCandidateToCanvas = useCallback(async (candidate: { id: string; title: string; imageArtifactId: string }, dataUrl: string) => {
-        const target = portraitClearanceNodeId ? nodesRef.current.find((node) => node.id === portraitClearanceNodeId) : undefined;
-        if (!target) return;
-        try {
-            const image = await uploadImage(dataUrl);
-            const created = createCanvasNode(CanvasNodeType.Image, { x: target.position.x + target.width + 260, y: target.position.y + target.height / 2 }, imageMetadata(image));
-            created.title = candidate.title.slice(0, 80) || "肖像排查候选";
-            const connection = { id: nanoid(), fromNodeId: created.id, toNodeId: target.id };
-            setNodes((current) => [...current, created]);
-            setConnections((current) => [...current, connection]);
-            setSelectedNodeIds(new Set([created.id]));
-            const result = await ensureCanvasNodeAsset({ canvasId: projectId, domainProjectId: currentProject?.projectId, node: created, source: "canvas-manual" });
-            setNodes((current) => current.map((item) => item.id === created.id ? { ...item, metadata: { ...item.metadata, assetId: result.assetId } } : item));
-            message.success("候选图片已添加到画布并连接到排查节点");
-        } catch (error) {
-            message.error(error instanceof Error ? error.message : "候选图片添加失败");
-        }
-    }, [currentProject?.projectId, message, portraitClearanceNodeId, projectId, setConnections, setNodes, setSelectedNodeIds]);
     const pendingConnectionSourceNode = pendingConnectionCreate?.connection.handleType === "source" ? nodeById.get(pendingConnectionCreate.connection.nodeId) : null;
     const canCreateDrawingFromConnection = !pendingConnectionCreate?.batchSourceNodeIds?.length && pendingConnectionSourceNode?.type === CanvasNodeType.Image && Boolean(pendingConnectionSourceNode.metadata?.content);
 
@@ -1396,15 +1322,6 @@ function InfiniteCanvasPage() {
         setDrawingNodeId(node.id);
     }, []);
 
-    const openPortraitClearance = useCallback((node: CanvasNodeData) => {
-        if (node.type !== PORTRAIT_CLEARANCE_NODE_TYPE) return;
-        setSelectedNodeIds(new Set([node.id]));
-        setSelectedConnectionId(null);
-        setContextMenu(null);
-        setDialogNodeId(null);
-        setToolbarNodeId(null);
-        setPortraitClearanceNodeId(node.id);
-    }, []);
     const openArtCritique = useCallback((node: CanvasNodeData) => {
         if (node.type !== ART_CRITIQUE_NODE_TYPE) return;
         setSelectedNodeIds(new Set([node.id]));
@@ -1451,9 +1368,8 @@ function InfiniteCanvasPage() {
         updateMetadata: updateNodeMetadataFromContent,
         updateNode: updateNodeFromContent,
         updateMediaNode: updateMediaNodeFromContent,
-        openPortraitClearance,
         openArtCritique,
-    }), [deleteNodeFromContent, downloadNodeImage, duplicateNodeFromContent, openArtCritique, openPortraitClearance, updateMediaNodeFromContent, updateNodeFromContent, updateNodeMetadataFromContent]);
+    }), [deleteNodeFromContent, downloadNodeImage, duplicateNodeFromContent, openArtCritique, updateMediaNodeFromContent, updateNodeFromContent, updateNodeMetadataFromContent]);
     const { agentSnapshot, agentUndoCount, applyAgentOps, canUndoAgentOps, dismissLastAgentChange, lastAgentChange, undoAgentOps, viewLastAgentChange } = useCanvasAgentOperations({
         projectId,
         domainProjectId: currentProject?.projectId,
@@ -2125,8 +2041,7 @@ function InfiniteCanvasPage() {
             onCreatePipeline={createShortDramaPipeline}
             onOpenAgent={() => {
                 setCinematicAgentEntry(true);
-                setAgentMode("online");
-                openAgent("online");
+                openAgent();
             }}
             onStartFreeform={() => updateProject(projectId, { starterMode: "freeform" })}
             onUpload={() => handleUploadRequest()}
@@ -2170,7 +2085,6 @@ function InfiniteCanvasPage() {
                             onRedo={redoCanvas}
                             onShare={() => setShareModalOpen(true)}
                             agentOpen={assistantOpen}
-                            compactAgentStatus={codexCompactAgent ? { connected: localAgentConnected, enabled: localAgentEnabled, activity: localAgentActivity } : undefined}
                             onToggleAgent={() => (assistantOpen ? closeAgent() : openAgent())}
                             shortcutRequestNonce={shortcutRequestNonce}
                             mediaPerformanceMode={mediaPerformanceMode}
@@ -2433,9 +2347,6 @@ function InfiniteCanvasPage() {
                                         undoOpsCount={agentUndoCount}
                                         onUndoOps={undoAgentOps}
                                         onPasteImage={pasteAssistantImage}
-                                        agentMode={agentMode}
-                                        onAgentModeChange={setAgentMode}
-                                        autoConnectLocal={codexAutoConnect}
                                         closing={assistantClosing}
                                         onCollapse={closeAgent}
                                         cinematicEntry={cinematicAgentEntry}
@@ -2781,16 +2692,6 @@ function InfiniteCanvasPage() {
                         </Suspense>
                     ) : null}
 
-                        <PortraitClearanceModal
-                            projectId={projectId}
-                            node={portraitClearanceNode}
-                            upstreamNodes={portraitClearanceInputs}
-                            open={Boolean(portraitClearanceNode)}
-                            onClose={() => setPortraitClearanceNodeId(null)}
-                            onUpdateState={(nodeId, state: PortraitClearanceNodeState) => handleConfigNodeChange(nodeId, { portraitClearance: state })}
-                            onAddCandidate={addPortraitCandidateToCanvas}
-                        />
-
                         <AiArtCritiqueModal
                             node={artCritiqueNode}
                             upstreamNodes={artCritiqueInputs}
@@ -2893,9 +2794,6 @@ function InfiniteCanvasPage() {
 
                     <AssetPickerModal open={assetPickerOpen} multiple={assetInsertScope === "canvas"} onInsert={handleLibraryAssetsInsert} onClose={closeAssetPicker} />
                     <CanvasProjectAssetModal open={projectAssetOpen} detail={linkedProjectQuery.data} initialCategory={projectAssetInitialCategory} initialFolderId={projectAssetInitialFolderId} onClose={closeProjectAssets} onInsert={handleTimelineProjectAssetsInsert} onInsertFolder={projectAssetScope === "canvas" ? handleProjectFolderInsert : undefined} />
-                    {codexCompactAgent && !assistantMounted ? (
-                        <CanvasLocalAgentPanel headless snapshot={agentSnapshot} canUndoOps={canUndoAgentOps} undoOpsCount={agentUndoCount} onApplyOps={applyAgentOps} onUndoOps={undoAgentOps} autoConnect={codexAutoConnect} />
-                    ) : null}
                     </section>
                 </CanvasOverlayLayerProvider>
             </main>

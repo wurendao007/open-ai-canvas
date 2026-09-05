@@ -134,6 +134,11 @@ func getS3ObjectRange(setting ossSettingValue, objectKey string, rangeHeader str
 }
 
 func signedS3ObjectURL(setting ossSettingValue, objectKey string, expiresAt time.Time, download ...bool) (string, error) {
+	downloadFile := len(download) > 0 && download[0]
+	return signedS3ObjectURLWithName(setting, objectKey, expiresAt, downloadFile, "")
+}
+
+func signedS3ObjectURLWithName(setting ossSettingValue, objectKey string, expiresAt time.Time, download bool, fileName string) (string, error) {
 	client, err := newS3Client(setting, 2*time.Minute)
 	if err != nil {
 		return "", err
@@ -143,8 +148,12 @@ func signedS3ObjectURL(setting ossSettingValue, objectKey string, expiresAt time
 		return "", errors.New("S3 签名有效期必须晚于当前时间")
 	}
 	input := &awss3.GetObjectInput{Bucket: aws.String(setting.Bucket), Key: aws.String(strings.TrimLeft(objectKey, "/"))}
-	if len(download) > 0 && download[0] {
-		input.ResponseContentDisposition = aws.String("attachment")
+	if download {
+		value := "attachment"
+		if fileName != "" {
+			value = ContentDispositionAttachment(fileName)
+		}
+		input.ResponseContentDisposition = aws.String(value)
 	}
 	req, _ := client.GetObjectRequest(input)
 	value, err := req.Presign(duration)

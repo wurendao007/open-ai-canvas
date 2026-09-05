@@ -75,6 +75,7 @@ export function AdminUserEditDrawer({
             title={user ? `编辑用户 · ${user.displayName || user.username}` : "编辑用户"}
             open={Boolean(user)}
             size="min(520px, 100vw)"
+            forceRender
             onClose={close}
             mask={{ closable: !saving }}
             destroyOnHidden
@@ -173,6 +174,7 @@ export function AdminUserCreateDrawer({
             title={"\u6dfb\u52a0\u7528\u6237"}
             open={open}
             size="min(520px, 100vw)"
+            forceRender
             onClose={close}
             mask={{ closable: !saving }}
             destroyOnHidden

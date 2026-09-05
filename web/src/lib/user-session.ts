@@ -60,32 +60,35 @@ export async function applyUserSession(payload: AuthSessionPayload) {
         if (!persistedCanvasHistory) useCanvasHistoryStore.setState({ deletedProjects: [] });
         if (!persistedAssets) useAssetStore.setState({ assets: [] });
         if (!persistedPlugins) usePluginStore.setState({ installations: [], runtimeStatuses: {}, pluginStates: {} });
-        if (!persistedConfig) {
-            // 只有首次配置缺失时才生成能力推荐；已有配置中的空数组代表用户明确清空。
-            // 使用统一模型目录接口
-            const catalog = await getModelCatalog();
-            let channels: ModelChannel[] = [];
-            if (catalog.source === "frontend" && catalog.models) {
-                channels = managedModelChannels(catalog.models);
-            } else if (catalog.source === "system" && catalog.channels) {
-                channels = systemChannelModelChannels(catalog.channels);
-            }
-            const initialSystemConfig = {
-                ...defaultConfig,
-                channels,
-                imageModels: undefined,
-                videoModels: undefined,
-                textModels: undefined,
-                audioModels: undefined,
-            };
-            useConfigStore.getState().replaceConfig(normalizeConfigSnapshot({ config: initialSystemConfig }).config);
-        } else {
-            // 已有配置时也需要合并最新的系统渠道
-            const catalog = await getModelCatalog();
-            if (catalog.source === "frontend" && catalog.models) {
-                useConfigStore.getState().mergeSystemChannels(managedModelChannels(catalog.models));
-            } else if (catalog.source === "system" && catalog.channels) {
-                useConfigStore.getState().mergeSystemChannels(systemChannelModelChannels(catalog.channels));
+        // 匿名会话只恢复本地 guest scope。模型目录是受保护的登录后接口，
+        // 不应在会话失效的降级路径中再次请求它并制造未处理的 401 Promise。
+        if (payload.user?.id) {
+            if (!persistedConfig) {
+                // 只有首次配置缺失时才生成能力推荐；已有配置中的空数组代表用户明确清空。
+                const catalog = await getModelCatalog();
+                let channels: ModelChannel[] = [];
+                if (catalog.source === "frontend" && catalog.models) {
+                    channels = managedModelChannels(catalog.models);
+                } else if (catalog.source === "system" && catalog.channels) {
+                    channels = systemChannelModelChannels(catalog.channels);
+                }
+                const initialSystemConfig = {
+                    ...defaultConfig,
+                    channels,
+                    imageModels: undefined,
+                    videoModels: undefined,
+                    textModels: undefined,
+                    audioModels: undefined,
+                };
+                useConfigStore.getState().replaceConfig(normalizeConfigSnapshot({ config: initialSystemConfig }).config);
+            } else {
+                // 已有配置时也需要合并最新的系统渠道
+                const catalog = await getModelCatalog();
+                if (catalog.source === "frontend" && catalog.models) {
+                    useConfigStore.getState().mergeSystemChannels(managedModelChannels(catalog.models));
+                } else if (catalog.source === "system" && catalog.channels) {
+                    useConfigStore.getState().mergeSystemChannels(systemChannelModelChannels(catalog.channels));
+                }
             }
         }
         installRemoteUserDataAutoSync();

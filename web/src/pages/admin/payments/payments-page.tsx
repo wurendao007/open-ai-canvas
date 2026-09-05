@@ -598,8 +598,9 @@ export default function AdminPaymentsPage() {
 
             <Drawer
                 title={providerDrawer ? `配置 ${providerDrawer.name}` : "配置支付渠道"}
-                width={620}
+                size={620}
                 open={Boolean(providerDrawer)}
+                forceRender
                 destroyOnHidden
                 onClose={() => setProviderDrawer(undefined)}
                 extra={
@@ -646,8 +647,9 @@ export default function AdminPaymentsPage() {
 
             <Drawer
                 title={productDrawer ? "编辑充值商品" : "新增充值商品"}
-                width={520}
+                size={520}
                 open={productDrawer !== undefined}
+                forceRender
                 destroyOnHidden
                 onClose={() => setProductDrawer(undefined)}
                 extra={
@@ -695,7 +697,7 @@ export default function AdminPaymentsPage() {
 
             <Drawer
                 title={detailRun ? `${providerNames[detailRun.providerId] || detailRun.providerId} · ${detailRun.billDate} 对账明细` : "对账明细"}
-                width="min(1080px, 94vw)"
+                size="min(1080px, 94vw)"
                 open={Boolean(detailRun)}
                 destroyOnHidden
                 onClose={() => {

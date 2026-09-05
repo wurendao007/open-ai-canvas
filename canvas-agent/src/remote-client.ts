@@ -9,7 +9,7 @@ export class RemoteMcpClient {
     private credentials: RemoteCredentials;
     private refreshPromise: Promise<void> | null = null;
     constructor(credentials = loadRemoteConfig() ?? undefined) {
-        if (!credentials) throw new Error("尚未登录 Canvas 服务，请先运行 canvas-agent login web");
+        if (!credentials) throw new Error("尚未登录 KraftReel 服务，请先运行 kraftreel login web");
         this.credentials = { ...credentials, serverUrl: normalizeServerUrl(credentials.serverUrl) };
     }
     get serverUrl() { return this.credentials.serverUrl; }
@@ -76,7 +76,7 @@ export class RemoteMcpClient {
     validate(id: string, body: unknown) { return this.request<Record<string, unknown>>(`/mcp/projects/${encodeURIComponent(id)}/tools/validate`, { method: "POST", body, dispatchedWrite: false }); }
     apply(id: string, body: unknown) { return this.request<Record<string, unknown>>(`/mcp/projects/${encodeURIComponent(id)}/tools/apply`, { method: "POST", body, dispatchedWrite: true }); }
     generate(id: string, body: unknown) { return this.request<Record<string, unknown>>(`/mcp/projects/${encodeURIComponent(id)}/tools/generate`, { method: "POST", body, dispatchedWrite: true }); }
-    requireSelection(): ProjectSelection { const selection = loadProjectSelection(); if (!selection) throw new Error("尚未选择画布项目，请先运行 canvas-agent project list 和 project use <id>"); return selection; }
+    requireSelection(): ProjectSelection { const selection = loadProjectSelection(); if (!selection) throw new Error("尚未选择画布项目，请先运行 kraftreel project list 和 project use <id>"); return selection; }
 }
 
 export function createRemoteClient() { return new RemoteMcpClient(); }

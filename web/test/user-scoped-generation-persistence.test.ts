@@ -4483,6 +4483,51 @@ test("user session stays unhydrated until the remote baseline is durable", async
     }
 });
 
+test("anonymous session recovery does not request the protected model catalog", async () => {
+    const originalWindow = (globalThis as { window?: unknown }).window;
+    const originalGetItem = localforage.getItem.bind(localforage);
+    const originalSetItem = localforage.setItem.bind(localforage);
+    const previousAdapter = apiClient.defaults.adapter;
+    const previousUserState = useUserStore.getState();
+    const localValues = new Map<string, string>();
+    const localStorageValues = new Map<string, string>();
+    Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: {
+            setTimeout: () => 1,
+            clearTimeout: () => undefined,
+            localStorage: {
+                getItem: (key: string) => localStorageValues.get(key) ?? null,
+                setItem: (key: string, value: string) => localStorageValues.set(key, value),
+                removeItem: (key: string) => localStorageValues.delete(key),
+            },
+        },
+    });
+    localforage.getItem = (async (key: string) => localValues.get(key) ?? null) as typeof localforage.getItem;
+    localforage.setItem = (async (key: string, value: string) => {
+        localValues.set(key, value);
+        return value;
+    }) as typeof localforage.setItem;
+    apiClient.defaults.adapter = async (config) => {
+        throw new Error(`unexpected anonymous request: ${String(config.url || "")}`);
+    };
+    try {
+        resetRemoteUserDataSync();
+        useUserStore.setState({ user: null, hydrated: true });
+        await applyUserSession({ user: null });
+        expect(useUserStore.getState().user).toBeNull();
+        expect(useUserStore.getState().hydrated).toBe(true);
+    } finally {
+        resetRemoteUserDataSync();
+        useUserStore.setState(previousUserState);
+        localforage.getItem = originalGetItem;
+        localforage.setItem = originalSetItem;
+        apiClient.defaults.adapter = previousAdapter;
+        if (originalWindow === undefined) delete (globalThis as { window?: unknown }).window;
+        else Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+    }
+});
+
 test("deleted canvas history rehydrates from the active account scope only", async () => {
     const originalWindow = (globalThis as { window?: unknown }).window;
     const originalGetItem = localforage.getItem.bind(localforage);
@@ -4632,10 +4677,27 @@ test("login repair persists the missing asset before its canvas", async () => {
             return { data: { code: 0, data: { projects: [project], assets: [] }, msg: "" }, status: 200, statusText: "OK", headers: {}, config };
         }
         const body = (typeof config.data === "string" ? JSON.parse(config.data) : config.data) as Record<string, unknown>;
-        if (method === "put" && url.startsWith("/assets/")) writes.push({ kind: "asset", body });
-        else if (method === "put" && url.startsWith("/canvas-projects/")) writes.push({ kind: "canvas", body });
-        else throw new Error(`unexpected request: ${method} ${url}`);
-        return { data: { code: 0, data: {}, msg: "" }, status: 200, statusText: "OK", headers: {}, config };
+        if (method === "put" && url.startsWith("/assets/")) {
+            writes.push({ kind: "asset", body });
+            const asset = body.asset as Asset;
+            return { data: { code: 0, data: { asset: { id: asset.id, title: asset.title, createdAt: asset.createdAt, updatedAt: asset.updatedAt } }, msg: "" }, status: 200, statusText: "OK", headers: {}, config };
+        }
+        if (method === "put" && url.startsWith("/canvas-projects/")) {
+            writes.push({ kind: "canvas", body });
+            const canvas = body.project as CanvasProject;
+            return {
+                data: {
+                    code: 0,
+                    data: { project: { id: canvas.id, title: canvas.title, createdAt: canvas.createdAt, updatedAt: canvas.updatedAt, revision: 0, stateHash: "server-state-hash", hashSource: "server" } },
+                    msg: "",
+                },
+                status: 200,
+                statusText: "OK",
+                headers: {},
+                config,
+            };
+        }
+        throw new Error(`unexpected request: ${method} ${url}`);
     };
 
     try {

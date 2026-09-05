@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ComponentType, type ReactNode, type RefObject } from "react";
 import { AlertCircle, BookOpenCheck, Clock3, Download, FileText, Image as ImageIcon, LoaderCircle, Music2, Pencil, RefreshCw, Video } from "lucide-react";
 
 import { VideoPlayer } from "@/components/video-player";
@@ -19,21 +19,12 @@ import { resolveImageUrl } from "@/services/image-storage";
 import { hydrateCanvasVideoPreview } from "@/services/canvas-video-preview";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
-import { PORTRAIT_CLEARANCE_NODE_TYPE } from "@/lib/portrait-clearance/contracts";
 import { ART_CRITIQUE_NODE_TYPE } from "@/lib/art-critique/contracts";
 import { createDefaultSubtitleStyle } from "@/types/timeline";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
 import { CanvasAudioPlayer } from "./canvas-audio-player";
 import { useCanvasNodeActions } from "./canvas-node-action-context";
 import { CanvasSubtitleOverlay } from "./canvas-subtitle-overlay";
-import { MarkdownNodeContent } from "./nodes/markdown-node";
-import { ChartNodeContent } from "./nodes/chart-node";
-import { CompareNodeContent } from "./nodes/compare-node";
-import { ColorGradeNodeContent } from "./nodes/color-grade-node";
-import { HtmlNodeContent } from "./nodes/html-node";
-import { PanoramaNodeContent } from "./nodes/panorama-node";
-import { SvgNodeContent } from "./nodes/svg-node";
-import { PortraitClearanceNodeContent } from "./nodes/portrait-clearance-node";
 import { ArtCritiqueNodeContent } from "./nodes/ai-art-critique-node";
 
 export type CanvasNodeContentProps = {
@@ -59,6 +50,43 @@ export type CanvasNodeContentProps = {
     mediaActive?: boolean;
 };
 
+type LazyNodeRendererProps = Pick<CanvasNodeContentProps, "node" | "theme" | "reduceMediaEffects">;
+type LazyNodeRenderer = ComponentType<LazyNodeRendererProps>;
+
+const LazyMarkdownNodeContent = lazy(() => import("./nodes/markdown-node").then((module) => ({ default: module.MarkdownNodeContent })));
+const LazySvgNodeContent = lazy(() => import("./nodes/svg-node").then((module) => ({ default: module.SvgNodeContent })));
+const LazyHtmlNodeContent = lazy(() => import("./nodes/html-node").then((module) => ({ default: module.HtmlNodeContent })));
+const LazyPanoramaNodeContent = lazy(() => import("./nodes/panorama-node").then((module) => ({ default: module.PanoramaNodeContent })));
+const LazyCompareNodeContent = lazy(() => import("./nodes/compare-node").then((module) => ({ default: module.CompareNodeContent })));
+const LazyChartNodeContent = lazy(() => import("./nodes/chart-node").then((module) => ({ default: module.ChartNodeContent })));
+const LazyColorGradeNodeContent = lazy(() => import("./nodes/color-grade-node").then((module) => ({ default: module.ColorGradeNodeContent })));
+
+function LazyNodeRendererFallback({ theme }: Pick<CanvasNodeContentProps, "theme">) {
+    return (
+        <div className="grid h-full w-full place-items-center" style={{ color: theme.node.muted }}>
+            <LoaderCircle className="size-5 animate-spin" />
+        </div>
+    );
+}
+
+function withLazyNodeRenderer(Renderer: LazyNodeRenderer) {
+    return function LazyNodeRendererBoundary(props: LazyNodeRendererProps) {
+        return (
+            <Suspense fallback={<LazyNodeRendererFallback theme={props.theme} />}>
+                <Renderer {...props} />
+            </Suspense>
+        );
+    };
+}
+
+const renderLazyMarkdownNode = withLazyNodeRenderer(LazyMarkdownNodeContent);
+const renderLazySvgNode = withLazyNodeRenderer(LazySvgNodeContent);
+const renderLazyHtmlNode = withLazyNodeRenderer(LazyHtmlNodeContent);
+const renderLazyPanoramaNode = withLazyNodeRenderer(LazyPanoramaNodeContent);
+const renderLazyCompareNode = withLazyNodeRenderer(LazyCompareNodeContent);
+const renderLazyChartNode = withLazyNodeRenderer(LazyChartNodeContent);
+const renderLazyColorGradeNode = withLazyNodeRenderer(LazyColorGradeNodeContent);
+
 export function CanvasNodeContent(props: CanvasNodeContentProps) {
     const hasCustomContent =
         props.node.type === CanvasNodeType.Config ||
@@ -68,7 +96,6 @@ export function CanvasNodeContent(props: CanvasNodeContentProps) {
         (props.node.metadata?.workflowKind === "story_input" && !props.isEditingContent) ||
         (props.node.metadata?.workflowKind === "styleboard" && !props.node.metadata.content);
     if (hasCustomContent && props.renderNodeContent) return props.renderNodeContent(props.node);
-    if (props.node.type === PORTRAIT_CLEARANCE_NODE_TYPE) return <PortraitClearanceNodeContent node={props.node} />;
     if (props.node.type === ART_CRITIQUE_NODE_TYPE) return <ArtCritiqueNodeContent node={props.node} />;
     if (props.isBatchRoot) return <ImageNodeContent {...props} />;
     if (props.node.metadata?.status === "loading") return <LoadingContent node={props.node} theme={props.theme} onOpenTaskDetails={props.onOpenTaskDetails} />;
@@ -121,13 +148,13 @@ const nodeContentRenderers: Partial<Record<string, (props: CanvasNodeContentProp
     [CanvasNodeType.Audio]: AudioNodeContent,
     [CanvasNodeType.Drawing]: DrawingContent,
     [CanvasNodeType.Frame]: UnknownNodeContent,
-    [CanvasNodeType.Markdown]: MarkdownNodeContent,
-    [CanvasNodeType.Svg]: SvgNodeContent,
-    [CanvasNodeType.Html]: HtmlNodeContent,
-    [CanvasNodeType.Panorama]: PanoramaNodeContent,
-    [CanvasNodeType.Compare]: CompareNodeContent,
-    [CanvasNodeType.Chart]: ChartNodeContent,
-    [CanvasNodeType.ColorGrade]: ColorGradeNodeContent,
+    [CanvasNodeType.Markdown]: renderLazyMarkdownNode,
+    [CanvasNodeType.Svg]: renderLazySvgNode,
+    [CanvasNodeType.Html]: renderLazyHtmlNode,
+    [CanvasNodeType.Panorama]: renderLazyPanoramaNode,
+    [CanvasNodeType.Compare]: renderLazyCompareNode,
+    [CanvasNodeType.Chart]: renderLazyChartNode,
+    [CanvasNodeType.ColorGrade]: renderLazyColorGradeNode,
 };
 
 function DrawingContent({ node, theme, drawingProjectId }: CanvasNodeContentProps) {
@@ -858,13 +885,8 @@ function useNodeResourceUrl(node: CanvasNodeData, eager: boolean) {
         setUrl("");
         setLoading(eager);
         // 只有图片进入 Blob 缓存；视频正文必须保留 Range 流式播放能力。
-        const resolve = node.type === CanvasNodeType.Image
-            ? eager
-                ? resolveImageUrl(storageKey, fallback, { cacheMiss: true, proxyFallback: false })
-                : getCachedResourceObjectUrl(storageKey)
-            : eager
-              ? getResourceDirectUrl(storageKey)
-              : Promise.resolve("");
+        const resolve =
+            node.type === CanvasNodeType.Image ? (eager ? resolveImageUrl(storageKey, fallback, { cacheMiss: true, proxyFallback: false }) : getCachedResourceObjectUrl(storageKey)) : eager ? getResourceDirectUrl(storageKey) : Promise.resolve("");
         void resolve
             .then((cached) => {
                 if (!cancelled) setUrl(cached || (eager ? safeFallback : ""));

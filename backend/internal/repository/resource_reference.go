@@ -26,6 +26,13 @@ type ResourceDirectReference struct {
 	ResourceID string
 }
 
+// 公告与公告配图草稿的引用类型对外命名，供 service 在替换配图或撤回草稿时
+// 排除“本次操作正在移除的那条引用”，避免按字面量匹配而与这里的取值失配。
+const (
+	ResourceReferenceKindAnnouncement      = "公告"
+	ResourceReferenceKindAnnouncementDraft = "公告草稿"
+)
+
 type ResourceReferenceSnapshot struct {
 	Documents []ResourceReferenceDocument
 	Direct    []ResourceDirectReference
@@ -267,7 +274,7 @@ func (r *Repository) ResourceReferenceSnapshot(userID string, excludingAssetID s
 		return snapshot, err
 	}
 	for _, announcement := range announcements {
-		snapshot.Direct = append(snapshot.Direct, ResourceDirectReference{Kind: "公告", ID: announcement.ID, Title: announcement.Title, ResourceID: announcement.ImageResourceID})
+		snapshot.Direct = append(snapshot.Direct, ResourceDirectReference{Kind: ResourceReferenceKindAnnouncement, ID: announcement.ID, Title: announcement.Title, ResourceID: announcement.ImageResourceID})
 	}
 
 	var announcementDrafts []model.AnnouncementImageDraft
@@ -275,7 +282,7 @@ func (r *Repository) ResourceReferenceSnapshot(userID string, excludingAssetID s
 		return snapshot, err
 	}
 	for _, draft := range announcementDrafts {
-		snapshot.Direct = append(snapshot.Direct, ResourceDirectReference{Kind: "公告草稿", ID: draft.ResourceID, ResourceID: draft.ResourceID})
+		snapshot.Direct = append(snapshot.Direct, ResourceDirectReference{Kind: ResourceReferenceKindAnnouncementDraft, ID: draft.ResourceID, ResourceID: draft.ResourceID})
 	}
 	return snapshot, nil
 }

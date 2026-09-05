@@ -36,6 +36,7 @@ export type AssetLibraryPickerFolder = {
 };
 
 type Props = {
+    remoteLibrary?: boolean;
     open: boolean;
     items: AssetLibraryPickerItem[];
     categoryLabels: Record<string, string>;
@@ -329,7 +330,7 @@ export function AssetLibraryPickerModal({
             title={null}
             destroyOnHidden
             closable={!working}
-            maskClosable={!working}
+            mask={{ closable: !working }}
             keyboard={!working}
             onCancel={() => {
                 if (!working) onClose();

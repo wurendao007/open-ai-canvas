@@ -26,6 +26,8 @@ func TestVideoTaskTimeoutHasFiveMinuteSafetyFloor(t *testing.T) {
 }
 
 func TestOnlyResumableNewAPIChannel2VideoDeadlinesStayRunning(t *testing.T) {
+	// 判定是否可续跑要先 resolveProviderConfig，而它会校验 BaseURL 的真实解析结果。
+	allowTestUpstreamHosts(t)
 	svc := &Service{}
 	input, err := json.Marshal(canvasGenerationInput{Mode: "video", Config: providerConfig{BaseURL: "https://example.com", InterfaceType: string(model.ChannelInterfaceNewAPIChannel2)}})
 	if err != nil {
@@ -51,6 +53,7 @@ func TestOnlyResumableNewAPIChannel2VideoDeadlinesStayRunning(t *testing.T) {
 }
 
 func TestResumableVideoDeadlineUsesResolvedSystemChannelProtocol(t *testing.T) {
+	allowTestUpstreamHosts(t)
 	db, err := gorm.Open(sqlite.Open("file:"+newID()+"?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)

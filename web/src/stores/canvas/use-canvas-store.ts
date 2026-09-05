@@ -3,7 +3,7 @@ import { persist, type PersistStorage, type StorageValue } from "zustand/middlew
 
 import { nanoid } from "nanoid";
 import { DEFAULT_CANVAS_BACKGROUND_MODE, normalizeCanvasAppearance, readCanvasAppearanceDefault, type CanvasAppearance } from "@/lib/canvas/canvas-appearance";
-import { parseCanvasStorageDocument, rebaseCanvasProjects, serializeCanvasStorageDocument, type CanvasStorageDocument } from "@/lib/canvas/canvas-storage-revision";
+import { normalizeCanvasProjects, parseCanvasStorageDocument, rebaseCanvasProjects, serializeCanvasStorageDocument, type CanvasStorageDocument } from "@/lib/canvas/canvas-storage-revision";
 import { localForageStorageForScope } from "@/lib/localforage-storage";
 import { getActiveUserScope } from "@/lib/user-scope";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
@@ -492,8 +492,9 @@ export const useCanvasStore = create<CanvasStore>()(
                     viewport: source.viewport || initialViewport,
                     directorScenes: source.directorScenes || [],
                 };
-                set((state) => ({ projects: [project, ...state.projects] }));
-                return project.id;
+                const normalizedProject = normalizeCanvasProjects([project])[0] || project;
+                set((state) => ({ projects: [normalizedProject, ...state.projects] }));
+                return normalizedProject.id;
             },
             openProject: (id) => {
                 return get().projects.find((item) => item.id === id) || null;
@@ -507,7 +508,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     const projects = state.projects.filter((project) => !ids.includes(project.id));
                     return { projects };
                 }),
-            replaceProjects: (projects) => set({ projects: projects.map(withoutRemoteCanvasVersion) }),
+            replaceProjects: (projects) => set({ projects: normalizeCanvasProjects(projects).map(withoutRemoteCanvasVersion) }),
             updateProject: (id, patch) =>
                 set((state) => ({
                     projects: state.projects.map((project) => (project.id === id ? { ...project, ...patch, updatedAt: new Date().toISOString() } : project)),

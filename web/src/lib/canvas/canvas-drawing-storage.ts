@@ -1,6 +1,5 @@
-import localforage from "localforage";
-
 import type { CanvasDrawingEngine } from "@/lib/canvas/canvas-drawing-engine";
+import { createLazyLocalForage } from "@/lib/localforage-storage";
 import { readImageMeta } from "@/lib/image-utils";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { imageToDataUrl } from "@/services/image-storage";
@@ -32,9 +31,9 @@ export type CanvasDrawingRender = CanvasDrawingRenderDraft & {
     updatedAt: string;
 };
 
-const drawingStore = localforage.createInstance({ name: "infinite-canvas", storeName: "drawing_documents" });
-const drawingPreviewStore = localforage.createInstance({ name: "infinite-canvas", storeName: "drawing_previews" });
-const drawingRenderStore = localforage.createInstance({ name: "infinite-canvas", storeName: "drawing_generation_renders" });
+const getDrawingStore = createLazyLocalForage({ name: "infinite-canvas", storeName: "drawing_documents" });
+const getDrawingPreviewStore = createLazyLocalForage({ name: "infinite-canvas", storeName: "drawing_previews" });
+const getDrawingRenderStore = createLazyLocalForage({ name: "infinite-canvas", storeName: "drawing_generation_renders" });
 const INITIAL_DRAWING_RENDER_MAX_DIMENSION = 2048;
 const INITIAL_DRAWING_RENDER_PADDING = 24;
 
@@ -46,7 +45,7 @@ function drawingKey(projectId: string, drawingId: string) {
 
 export async function loadCanvasDrawing(projectId: string, drawingId: string) {
     if (!projectId || !drawingId) return null;
-    const saved = await drawingStore.getItem<CanvasDrawingSnapshot | LegacyCanvasDrawingSnapshot>(drawingKey(projectId, drawingId));
+    const saved = await getDrawingStore().getItem<CanvasDrawingSnapshot | LegacyCanvasDrawingSnapshot>(drawingKey(projectId, drawingId));
     return normalizeCanvasDrawingSnapshot(saved);
 }
 
@@ -71,17 +70,17 @@ export async function saveCanvasDrawing(
         shapeCount: summary.shapeCount,
         pageCount: Math.min(summary.pageCount, 1),
     };
-    await drawingStore.setItem(drawingKey(projectId, drawingId), next);
-    if (preview) await drawingPreviewStore.setItem(drawingKey(projectId, drawingId), preview);
-    else if (preview === null) await drawingPreviewStore.removeItem(drawingKey(projectId, drawingId));
+    await getDrawingStore().setItem(drawingKey(projectId, drawingId), next);
+    if (preview) await getDrawingPreviewStore().setItem(drawingKey(projectId, drawingId), preview);
+    else if (preview === null) await getDrawingPreviewStore().removeItem(drawingKey(projectId, drawingId));
     if (render) {
-        await drawingRenderStore.setItem<CanvasDrawingRender>(drawingKey(projectId, drawingId), {
+        await getDrawingRenderStore().setItem<CanvasDrawingRender>(drawingKey(projectId, drawingId), {
             ...render,
             version: 1,
             revision,
             updatedAt,
         });
-    } else if (render === null) await drawingRenderStore.removeItem(drawingKey(projectId, drawingId));
+    } else if (render === null) await getDrawingRenderStore().removeItem(drawingKey(projectId, drawingId));
     return next;
 }
 
@@ -112,28 +111,28 @@ export async function createCanvasDrawingFromImage(
 
 export async function loadCanvasDrawingPreview(projectId: string, drawingId: string) {
     if (!projectId || !drawingId) return null;
-    return drawingPreviewStore.getItem<Blob>(drawingKey(projectId, drawingId));
+    return getDrawingPreviewStore().getItem<Blob>(drawingKey(projectId, drawingId));
 }
 
 export async function loadCanvasDrawingRender(projectId: string, drawingId: string) {
     if (!projectId || !drawingId) return null;
-    return drawingRenderStore.getItem<CanvasDrawingRender>(drawingKey(projectId, drawingId));
+    return getDrawingRenderStore().getItem<CanvasDrawingRender>(drawingKey(projectId, drawingId));
 }
 
 export async function saveCanvasDrawingRenderPublication(projectId: string, drawingId: string, revision: number, publication: Pick<CanvasDrawingRenderDraft, "storageKey" | "url">) {
     const key = drawingKey(projectId, drawingId);
-    const render = await drawingRenderStore.getItem<CanvasDrawingRender>(key);
+    const render = await getDrawingRenderStore().getItem<CanvasDrawingRender>(key);
     if (!render || render.revision !== revision) return false;
-    await drawingRenderStore.setItem(key, { ...render, ...publication });
+    await getDrawingRenderStore().setItem(key, { ...render, ...publication });
     return true;
 }
 
 export async function removeCanvasDrawing(projectId: string, drawingId: string) {
     if (!projectId || !drawingId) return;
     await Promise.all([
-        drawingStore.removeItem(drawingKey(projectId, drawingId)),
-        drawingPreviewStore.removeItem(drawingKey(projectId, drawingId)),
-        drawingRenderStore.removeItem(drawingKey(projectId, drawingId)),
+        getDrawingStore().removeItem(drawingKey(projectId, drawingId)),
+        getDrawingPreviewStore().removeItem(drawingKey(projectId, drawingId)),
+        getDrawingRenderStore().removeItem(drawingKey(projectId, drawingId)),
     ]);
 }
 

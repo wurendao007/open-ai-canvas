@@ -34,7 +34,7 @@ import {
     type ShotRevisionInput,
     type WorkflowStep,
 } from "@/services/api/projects";
-import { resourceDownloadUrl, resourceFallbackUrl, resourceFileUrl, resourceIdFromFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
+import { resourceDownloadUrl, resourceFallbackUrl, resourceFileUrl, resourceIdFromFileUrl, resourceIdFromStorageKey, startResourceDownload } from "@/services/api/resources";
 import { resolveMediaUrl } from "@/services/file-storage";
 import { skillRuntime } from "@/services/skill-runtime";
 import { configuredModelMatchesCapability, modelDisplayName, modelOptionName, resolveModelChannel, selectableModelsByCapability, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
@@ -326,7 +326,6 @@ export default function WorkflowProductionWorkbench(props: Props) {
             if (!productionStep) throw new Error("当前生成阶段不可用，请刷新页面后重试");
             if (productionStep.status === "failed") throw new Error("当前生成阶段失败，请刷新后重试");
             if (!routedModel) throw new Error(activeStage === "video" ? "请先配置视频模型" : "请先配置图片模型");
-            if (routedModel.startsWith("local:dreamina-cli")) throw new Error("本机即梦任务暂不能登记到分镜产物，请选择后端模型渠道");
             const compatibilityError = modelCompatibilityError(effectiveConfig, routedModel, modelRequirements);
             if (compatibilityError) throw new Error(`当前模型配置不可用：${compatibilityError}`);
             const saved = await saveProjectShot(projectId, {
@@ -792,15 +791,11 @@ function revisionInput(values: ShotEditorValues): ShotRevisionInput {
 async function downloadArtifact(artifact: ShotArtifact, shotTitle: string, onError: (content: string) => void) {
     if (!artifact.resourceId) return;
     try {
-        const response = await fetch(resourceDownloadUrl(artifact.resourceId), { credentials: "include" });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        const anchor = document.createElement("a");
-        anchor.href = url;
-        anchor.download = `${shotTitle || "shot"}-v${artifact.version}.${artifact.type === "video" ? "mp4" : "png"}`;
-        anchor.click();
-        URL.revokeObjectURL(url);
+        // 预检鉴权后再触发浏览器下载：直接导航会在 401/500 时把 SPA 替换成 JSON 错误体。
+        // 跨域直连时源站预签名里的 response-content-disposition 决定文件名；
+        // 同源代理与本地存储则沿用这里的镜头名。
+        const fileName = `${shotTitle || "shot"}-v${artifact.version}.${artifact.type === "video" ? "mp4" : "png"}`;
+        await startResourceDownload(resourceDownloadUrl(artifact.resourceId), fileName);
     } catch (error) {
         onError(error instanceof Error ? `下载失败：${error.message}` : "下载失败");
     }

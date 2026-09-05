@@ -141,11 +141,16 @@ func (s *Service) DirectResourceURLAsAdmin(actor *model.User, id string) (string
 		}
 		return "", false, err
 	}
-	return s.browserResourceURL(resource)
+	value, proxy, _, err := s.browserResourceURLWithOptions(resource, false)
+	return value, proxy, err
 }
 
 func normalizeAdminResourceQuery(query AdminResourceQuery) (repository.AdminResourceFilter, int, int, error) {
 	page, limit := normalizeAdminPage(query.Page, query.Limit)
+	maxInt := int(^uint(0) >> 1)
+	if page-1 > maxInt/limit {
+		return repository.AdminResourceFilter{}, 0, 0, BadAuthRequest("资源分页范围无效")
+	}
 	filter := repository.AdminResourceFilter{
 		Keyword:  strings.TrimSpace(query.Keyword),
 		Kind:     strings.ToLower(strings.TrimSpace(query.Kind)),

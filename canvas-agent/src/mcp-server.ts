@@ -10,7 +10,7 @@ import type { CanvasSnapshot } from "./types.js";
 export const REMOTE_AGENT_PROMPT = "你是影策在线画布 Agent。所有画布读取和写入都通过远程 HTTPS MCP 接口完成。写入前先读取上下文并携带 expectedRevision 与 expectedStateHash；409/428/422 必须如实报告并重新读取，不得猜测节点 id。删除、覆盖、移动、改边和生成由 MCP 宿主审批。";
 
 export async function startMcpServer(options: { client?: RemoteMcpClient } = {}) {
-    const server = new McpServer({ name: "canvas-agent", version: "0.1.0" }, { instructions: REMOTE_AGENT_PROMPT });
+    const server = new McpServer({ name: "kraftreel-cli", version: "0.1.0" }, { instructions: REMOTE_AGENT_PROMPT });
     registerMcpTools(server, options.client ?? createRemoteClient());
     await server.connect(new StdioServerTransport());
 }

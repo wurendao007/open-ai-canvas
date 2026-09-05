@@ -17,7 +17,7 @@ import { CANVAS_FOLDER_THEME_OPTIONS, resolveCanvasFolderTheme } from "@/lib/can
 import { resolveProjectCanvasStyle } from "@/components/canvas/canvas-style-picker-modal";
 import { CHARACTER_VOICE_FORMAT_LABEL, CHARACTER_VOICE_UPLOAD_ACCEPT, characterVoiceFormatName, characterVoiceTitleFromFileName, isSupportedCharacterVoiceFile } from "@/lib/character-voice-formats";
 import { ASSET_CATEGORIES, defaultAssetCategoryForKind, normalizeAssetCategory } from "@/lib/asset-category";
-import { resourceDownloadUrl, resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
+import { resourceDownloadUrl, resourceFileUrl, resourceIdFromStorageKey, startResourceDownload } from "@/services/api/resources";
 import { uploadMediaFile } from "@/services/file-storage";
 import {
     bindProjectCharacterVoice,
@@ -358,7 +358,7 @@ export default function ProjectAssetsView({ detail, refreshProject }: ProjectDet
             return;
         }
         const cover = asset.character?.representations.find((item) => item.role === "turnaround_sheet") || asset.character?.representations.find((item) => item.role === "primary") || asset.character?.representations[0];
-        if (cover) saveAs(resourceDownloadUrl(cover.resourceId), `${asset.title || "character"}.png`);
+        if (cover) startResourceDownload(resourceDownloadUrl(cover.resourceId), `${asset.title || "character"}.png`).catch((error) => message.error(error instanceof Error ? `下载失败：${error.message}` : "下载失败"));
         else {
             const remoteUrl = projectAssetRemoteUrl(asset);
             if (remoteUrl) saveAs(remoteUrl, `${asset.title || "asset"}.${projectAssetFileExtension(asset.mediaType)}`);

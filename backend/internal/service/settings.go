@@ -39,6 +39,8 @@ type OSSSettingRequest struct {
 	Region          string `json:"region"`
 	Endpoint        string `json:"endpoint"`
 	CDNBaseURL      string `json:"cdnBaseUrl"`
+	CDNAuthType     string `json:"cdnAuthType"`
+	CDNAuthKey      string `json:"cdnAuthKey"`
 	Bucket          string `json:"bucket"`
 	AccessKeyID     string `json:"accessKeyId"`
 	AccessKeySecret string `json:"accessKeySecret"`
@@ -54,9 +56,13 @@ type PublicOSSSetting struct {
 	Enabled                 bool       `json:"enabled"`
 	StorageMode             string     `json:"storageMode"`
 	Provider                string     `json:"provider"`
+	Configured              bool       `json:"configured"`
+	EffectiveProvider       string     `json:"effectiveProvider"`
 	Region                  string     `json:"region"`
 	Endpoint                string     `json:"endpoint"`
 	CDNBaseURL              string     `json:"cdnBaseUrl"`
+	CDNAuthType             string     `json:"cdnAuthType"`
+	HasCDNAuthKey           bool       `json:"hasCdnAuthKey"`
 	Bucket                  string     `json:"bucket"`
 	AccessKeyID             string     `json:"accessKeyId"`
 	HasAccessKeySecret      bool       `json:"hasAccessKeySecret"`
@@ -82,6 +88,8 @@ type ossSettingValue struct {
 	Region            string `json:"region"`
 	Endpoint          string `json:"endpoint"`
 	CDNBaseURL        string `json:"cdnBaseUrl"`
+	CDNAuthType       string `json:"cdnAuthType"`
+	CDNAuthKey        string `json:"cdnAuthKey"`
 	Bucket            string `json:"bucket"`
 	AccessKeyID       string `json:"accessKeyId"`
 	AccessKeySecret   string `json:"accessKeySecret"`
@@ -137,13 +145,26 @@ func (s *Service) UpdateOSSSetting(actor *model.User, req OSSSettingRequest) (*P
 		}
 	}
 	next = archiveOSSProviderCredentials(next, currentValue)
-	if next.Provider == s3Provider && next.Enabled {
+	var storageLocation *model.StorageLocation
+	if next.Enabled && next.Provider == s3Provider {
 		location, err := s.requireTestedS3Location("platform", "", next)
 		if err != nil {
 			return nil, err
 		}
+		storageLocation = location
 		next.StorageLocationID = location.ID
-	} else if next.Provider == s3Provider && storageLocationDigest(next) == storageLocationDigest(currentValue) {
+	} else if next.Enabled {
+		// Keep platform resources bound to an immutable location version for all
+		// providers, not only S3. A location is created on save; the explicit
+		// connection test remains mandatory for S3 because its credentials and
+		// endpoint contract are stricter.
+		location, err := s.upsertStorageLocation("platform", "", next)
+		if err != nil {
+			return nil, err
+		}
+		storageLocation = location
+		next.StorageLocationID = location.ID
+	} else if storageLocationDigest(next) == storageLocationDigest(currentValue) {
 		next.StorageLocationID = currentValue.StorageLocationID
 	}
 	stored, err := s.encryptOSSSettingSecrets(next)
@@ -153,6 +174,22 @@ func (s *Service) UpdateOSSSetting(actor *model.User, req OSSSettingRequest) (*P
 	valueJSON, err := json.Marshal(stored)
 	if err != nil {
 		return nil, err
+	}
+	if next.Enabled && storageLocation != nil {
+		// Keep the immutable resource binding in sync with delivery-only fields
+		// such as the public CDN domain. The connection test digest intentionally
+		// excludes those fields, so updating this JSON does not invalidate a
+		// previously verified origin credential.
+		locationStored := stored
+		locationStored.StorageLocationID = ""
+		locationJSON, err := json.Marshal(locationStored)
+		if err != nil {
+			return nil, err
+		}
+		storageLocation.ValueJSON = string(locationJSON)
+		if err := s.repo.SaveStorageLocation(storageLocation); err != nil {
+			return nil, err
+		}
 	}
 	setting := model.SystemSetting{
 		Key:       ossSettingKey,
@@ -165,11 +202,11 @@ func (s *Service) UpdateOSSSetting(actor *model.User, req OSSSettingRequest) (*P
 	if err := s.repo.SaveSystemSetting(&setting); err != nil {
 		return nil, err
 	}
-	if next.Provider == s3Provider && next.StorageLocationID != "" {
+	if next.Enabled && next.StorageLocationID != "" {
 		if err := s.repo.ActivateStorageLocation("platform", "", next.StorageLocationID, next.Enabled); err != nil {
 			return nil, err
 		}
-	} else if currentValue.Provider == s3Provider && currentValue.StorageLocationID != "" {
+	} else if currentValue.StorageLocationID != "" {
 		if err := s.repo.ActivateStorageLocation("platform", "", "", false); err != nil {
 			return nil, err
 		}
@@ -200,6 +237,20 @@ func (s *Service) UserOSSSetting(actor *model.User) (*PublicOSSSetting, error) {
 	public.StorageMode, err = s.effectiveResourceStorageMode(actor.ID)
 	if err != nil {
 		return nil, err
+	}
+	public.Configured = setting != nil
+	if setting == nil {
+		// The normalized default provider is only a form fallback. Do not expose
+		// it as if the user had configured that provider.
+		public.Provider = ""
+	}
+	if public.StorageMode == "oss" {
+		userAllowed := value.Provider != s3Provider || platform.AllowUserS3
+		if setting != nil && value.Enabled && userAllowed {
+			public.EffectiveProvider = value.Provider
+		} else if platform.Enabled {
+			public.EffectiveProvider = platform.Provider
+		}
 	}
 	return &public, nil
 }
@@ -345,6 +396,10 @@ func (s *Service) encryptOSSSettingSecrets(value ossSettingValue) (ossSettingVal
 	if err != nil {
 		return ossSettingValue{}, err
 	}
+	value.CDNAuthKey, err = s.encryptSettingSecret(value.CDNAuthKey)
+	if err != nil {
+		return ossSettingValue{}, err
+	}
 	value.ArchivedCredentials = cloneOSSProviderCredentials(value.ArchivedCredentials)
 	for provider, credentials := range value.ArchivedCredentials {
 		credentials.AccessKeySecret, err = s.encryptSettingSecret(credentials.AccessKeySecret)
@@ -367,6 +422,13 @@ func (s *Service) decryptOSSSettingSecrets(value *ossSettingValue) (bool, error)
 		needsMigration = true
 	}
 	value.SessionToken, err = s.decryptSettingSecret(value.SessionToken)
+	if err != nil {
+		return false, err
+	}
+	if value.CDNAuthKey != "" && !strings.HasPrefix(value.CDNAuthKey, encryptedSettingPrefix) {
+		needsMigration = true
+	}
+	value.CDNAuthKey, err = s.decryptSettingSecret(value.CDNAuthKey)
 	if err != nil {
 		return false, err
 	}
@@ -563,6 +625,8 @@ func ossSettingFromRequest(req OSSSettingRequest, current ossSettingValue) (ossS
 		Region:          strings.TrimSpace(req.Region),
 		Endpoint:        strings.TrimRight(strings.TrimSpace(req.Endpoint), "/"),
 		CDNBaseURL:      strings.TrimRight(strings.TrimSpace(req.CDNBaseURL), "/"),
+		CDNAuthType:     normalizeCDNAuthType(req.CDNAuthType),
+		CDNAuthKey:      strings.TrimSpace(req.CDNAuthKey),
 		Bucket:          strings.TrimSpace(req.Bucket),
 		AccessKeyID:     strings.TrimSpace(req.AccessKeyID),
 		AccessKeySecret: strings.TrimSpace(req.AccessKeySecret),
@@ -590,6 +654,11 @@ func ossSettingFromRequest(req OSSSettingRequest, current ossSettingValue) (ossS
 	}
 	if next.SessionToken == "" && next.Provider == current.Provider {
 		next.SessionToken = current.SessionToken
+	}
+	// An empty key preserves the secret only while the provider and CDN domain
+	// remain unchanged. A different CDN instance must receive its own key.
+	if next.CDNAuthKey == "" && next.Provider == current.Provider && next.CDNBaseURL == current.CDNBaseURL {
+		next.CDNAuthKey = current.CDNAuthKey
 	}
 	if next.Enabled {
 		if next.Bucket == "" {
@@ -626,6 +695,18 @@ func ossSettingFromRequest(req OSSSettingRequest, current ossSettingValue) (ossS
 			if _, err := ValidateOutboundURL(next.CDNBaseURL); err != nil {
 				return next, err
 			}
+		}
+		if !validCDNAuthType(next.Provider, next.CDNAuthType) {
+			return next, BadAuthRequest("当前云厂商不支持所选的 CDN 鉴权方式")
+		}
+		if next.CDNAuthType != "" && next.CDNBaseURL == "" {
+			return next, BadAuthRequest("启用 CDN 鉴权需要先填写 CDN 加速域名")
+		}
+		if next.CDNAuthType != "" && next.CDNAuthKey == "" {
+			return next, BadAuthRequest("启用 CDN 鉴权需要填写 CDN 鉴权密钥")
+		}
+		if next.CDNAuthKey != "" && next.CDNAuthType == "" {
+			return next, BadAuthRequest("请选择 CDN 鉴权方式")
 		}
 		if next.AccessKeyID == "" {
 			return next, BadAuthRequest("请填写访问密钥 AccessKey")
@@ -674,6 +755,8 @@ func normalizeOSSSetting(value ossSettingValue) ossSettingValue {
 		value.Endpoint = "https://cos." + value.Region + ".myqcloud.com"
 	}
 	value.CDNBaseURL = strings.TrimRight(strings.TrimSpace(value.CDNBaseURL), "/")
+	value.CDNAuthType = normalizeCDNAuthType(value.CDNAuthType)
+	value.CDNAuthKey = strings.TrimSpace(value.CDNAuthKey)
 	value.Bucket = strings.TrimSpace(value.Bucket)
 	value.AccessKeyID = strings.TrimSpace(value.AccessKeyID)
 	value.AccessKeySecret = strings.TrimSpace(value.AccessKeySecret)
@@ -704,6 +787,8 @@ func (s *Service) publicOSSSetting(setting *model.SystemSetting, value ossSettin
 		Region:             value.Region,
 		Endpoint:           value.Endpoint,
 		CDNBaseURL:         value.CDNBaseURL,
+		CDNAuthType:        value.CDNAuthType,
+		HasCDNAuthKey:      value.CDNAuthKey != "",
 		Bucket:             value.Bucket,
 		AccessKeyID:        value.AccessKeyID,
 		HasAccessKeySecret: strings.TrimSpace(value.AccessKeySecret) != "",
@@ -734,6 +819,8 @@ func (s *Service) publicUserOSSSetting(setting *model.UserOSSSetting, value ossS
 		Region:             value.Region,
 		Endpoint:           value.Endpoint,
 		CDNBaseURL:         value.CDNBaseURL,
+		CDNAuthType:        value.CDNAuthType,
+		HasCDNAuthKey:      value.CDNAuthKey != "",
 		Bucket:             value.Bucket,
 		AccessKeyID:        value.AccessKeyID,
 		HasAccessKeySecret: strings.TrimSpace(value.AccessKeySecret) != "",
@@ -769,6 +856,19 @@ func storageModeFromEnabled(enabled bool) string {
 func storageLocationDigest(value ossSettingValue) string {
 	value = normalizeOSSSetting(value)
 	payload := strings.Join([]string{value.Provider, value.Endpoint, value.Bucket, value.Region, strconv.FormatBool(value.PathStyle), value.PathPrefix}, "\x00")
+	sum := sha256.Sum256([]byte(payload))
+	return hex.EncodeToString(sum[:])
+}
+
+// Platform non-S3 resources must keep using the credential version that was
+// active when they were created. S3 locations retain the existing tested
+// location semantics, where credentials may be rotated in place.
+func storageLocationIdentityDigest(scope string, value ossSettingValue) string {
+	value = normalizeOSSSetting(value)
+	if scope != "platform" || value.Provider == s3Provider {
+		return storageLocationDigest(value)
+	}
+	payload := strings.Join([]string{storageLocationDigest(value), value.AccessKeyID, value.AccessKeySecret, value.SessionToken}, "\x00")
 	sum := sha256.Sum256([]byte(payload))
 	return hex.EncodeToString(sum[:])
 }

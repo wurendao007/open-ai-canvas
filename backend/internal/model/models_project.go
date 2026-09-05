@@ -25,7 +25,7 @@ type Resource struct {
 	Provider string         `json:"provider" gorm:"size:24"`
 	Endpoint string         `json:"endpoint"`
 	Bucket   string         `json:"bucket" gorm:"size:160"`
-	// 用户 OSS 每次修改都会生成新版本，资源固定引用创建时的存储与密钥；只有同一存储位置才可复用当前 CDN。
+	// 用户 OSS 每次修改都会生成新版本，资源固定引用创建时的存储位置与密钥。
 	StorageSettingID string `json:"-" gorm:"index;size:36"`
 	ObjectKey        string `json:"objectKey" gorm:"index"`
 	PublicURL        string `json:"publicUrl"`
@@ -35,6 +35,10 @@ type Resource struct {
 	Height           int    `json:"height"`
 	DurationMs       int64  `json:"durationMs"`
 	ETag             string `json:"etag" gorm:"size:160"`
+	// 浏览器兼容播放副本（HEVC/H.265 原片转 H.264）；状态为 none|processing|ready|failed。
+	PlaybackStatus    string `json:"playbackStatus" gorm:"index;size:24"`
+	PlaybackObjectKey string `json:"playbackObjectKey"`
+	PlaybackError     string `json:"playbackError" gorm:"type:text"`
 	// UploadKey 是客户端逻辑上传身份的摘要；NULL 表示不参与幂等约束。
 	UploadKey *string   `json:"-" gorm:"size:64;uniqueIndex:idx_resources_user_upload_key,priority:2"`
 	Error     string    `json:"error"`

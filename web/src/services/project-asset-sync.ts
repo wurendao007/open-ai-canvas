@@ -2,6 +2,7 @@ import { canvasNodeToAsset, declaredCanvasNodeAssetCategory, findCanvasNodeAsset
 import { canvasVideoAssetPreviewUrl } from "@/lib/canvas/canvas-media-preview";
 import { readImageMeta } from "@/lib/image-utils";
 import { parseBackendGenerationResult, type BackendGenerationResult } from "@/services/api/generation-task";
+import { ApiError } from "@/services/api/request";
 import { linkProjectAsset, moveProjectAsset, updateProjectAssetCategory } from "@/services/api/projects";
 import type { GenerationTask, GenerationTaskOutput } from "@/services/api/task-center";
 import { getMediaBlob, resolveMediaUrl, setMediaBlob } from "@/services/file-storage";
@@ -10,7 +11,6 @@ import { withGenerationArtifactCommitLock } from "@/services/generation-asset-re
 import { uploadGeneratedAssetToConfiguredSources } from "@/services/external-asset-sources";
 import { getImageBlob, resolveImageUrl, setImageBlob } from "@/services/image-storage";
 import { generationArtifactStorageKey, loadOrStoreGenerationArtifact } from "@/services/generation-artifact-sink";
-import { createLocalDreaminaTaskEffectStore } from "@/services/local-dreamina-generation";
 import { createProviderNeutralGenerationTaskEffectStore } from "@/services/provider-neutral-generation-effects";
 import { saveRemoteUserDataNow } from "@/services/user-data-sync";
 import { getActiveUserScope } from "@/lib/user-scope";
@@ -41,6 +41,21 @@ export type CanvasNodeAssetResult = {
 };
 
 const pendingAssetSyncs = new Map<string, Promise<CanvasNodeAssetResult>>();
+
+export async function retryCanvasAssetSyncAfterRateLimit<T>(operation: () => Promise<T>, options: { signal?: AbortSignal; maxRetries?: number; wait?: (delayMs: number, signal?: AbortSignal) => Promise<void> } = {}): Promise<T> {
+    const maxRetries = Math.max(0, options.maxRetries ?? 2);
+    const wait = options.wait ?? ((delayMs, signal) => new Promise<void>((resolve, reject) => {
+        const timer = globalThis.setTimeout(resolve, delayMs);
+        signal?.addEventListener("abort", () => { globalThis.clearTimeout(timer); reject(new DOMException("The operation was aborted", "AbortError")); }, { once: true });
+    }));
+    for (let attempt = 0; ; attempt += 1) {
+        throwIfAborted(options.signal);
+        try { return await operation(); } catch (error) {
+            if (!(error instanceof ApiError) || error.status !== 429 || attempt >= maxRetries) throw error;
+            await wait(Math.min(300000, Math.max(0, error.retryAfterMs ?? 60000)), options.signal);
+        }
+    }
+}
 
 export function ensureCanvasNodeAsset(options: EnsureCanvasNodeAssetOptions) {
     const scope = getActiveUserScope();
@@ -349,13 +364,6 @@ async function generationOutputAsset(input: Parameters<MaterializeGenerationTask
     };
 }
 
-let generationTaskEffectStoreInstance: ReturnType<typeof createLocalDreaminaTaskEffectStore> | undefined;
-
-function generationTaskEffectStore() {
-    generationTaskEffectStoreInstance ??= createLocalDreaminaTaskEffectStore();
-    return generationTaskEffectStoreInstance;
-}
-
 const materializeGenerationOutput: MaterializeGenerationTaskOutput = createIdempotentMaterializeOutput({
     async insertOrReturnAsset(input) {
         const scope = getActiveUserScope();
@@ -386,16 +394,6 @@ const materializeGenerationOutput: MaterializeGenerationTaskOutput = createIdemp
     },
 });
 
-const dreaminaGenerationTaskMaterializer = createGenerationTaskMaterializer({
-    effects: {
-        claim: (effectKey, taskId) => generationTaskEffectStore().claim(effectKey, taskId),
-        renew: (effectKey, taskId) => generationTaskEffectStore().renew(effectKey, taskId),
-        complete: (effectKey, taskId, result) => generationTaskEffectStore().complete(effectKey, taskId, result),
-        release: (effectKey, taskId) => generationTaskEffectStore().release(effectKey, taskId),
-    },
-    materializeOutput: materializeGenerationOutput,
-});
-
 function remoteGenerationTaskMaterializer() {
     return createGenerationTaskMaterializer({
         // 每个页面实例持有自己的租约；共享浏览器 storage + Web Lock 提供跨标签原子权威。
@@ -405,22 +403,22 @@ function remoteGenerationTaskMaterializer() {
 }
 
 function generationTaskMaterializer(task: GenerationTask) {
-    return task.provider === "dreamina-cli" ? dreaminaGenerationTaskMaterializer : remoteGenerationTaskMaterializer();
+    return remoteGenerationTaskMaterializer();
 }
 
 export async function materializeGenerationTaskAssets(task: GenerationTask, signal?: AbortSignal): Promise<GenerationTask> {
     return generationTaskMaterializer(task).materialize(projectGenerationTaskResult(task), signal);
 }
 
-export function attachGenerationTaskNode(task: GenerationTask, nodeId: string, outputIndex: number, consumer: Parameters<typeof dreaminaGenerationTaskMaterializer.attachNode>[3], signal?: AbortSignal) {
+export function attachGenerationTaskNode(task: GenerationTask, nodeId: string, outputIndex: number, consumer: Parameters<ReturnType<typeof remoteGenerationTaskMaterializer>["attachNode"]>[3], signal?: AbortSignal) {
     return generationTaskMaterializer(task).attachNode(task, nodeId, outputIndex, consumer, signal);
 }
 
-export function attachGenerationTaskMessage(task: GenerationTask, messageId: string, outputIndex: number, consumer: Parameters<typeof dreaminaGenerationTaskMaterializer.attachMessage>[3], signal?: AbortSignal) {
+export function attachGenerationTaskMessage(task: GenerationTask, messageId: string, outputIndex: number, consumer: Parameters<ReturnType<typeof remoteGenerationTaskMaterializer>["attachMessage"]>[3], signal?: AbortSignal) {
     return generationTaskMaterializer(task).attachMessage(task, messageId, outputIndex, consumer, signal);
 }
 
-export function resumeGenerationTaskAgent(task: GenerationTask, continuationId: string, consumer: Parameters<typeof dreaminaGenerationTaskMaterializer.resumeAgent>[2], signal?: AbortSignal) {
+export function resumeGenerationTaskAgent(task: GenerationTask, continuationId: string, consumer: Parameters<ReturnType<typeof remoteGenerationTaskMaterializer>["resumeAgent"]>[2], signal?: AbortSignal) {
     return generationTaskMaterializer(task).resumeAgent(task, continuationId, consumer, signal);
 }
 

@@ -11,9 +11,16 @@ export type RemoteCredentials = {
 
 export type ProjectSelection = { projectId: string; title?: string };
 
+/** Hosted service used by the published CLI. Self-hosted deployments can override it. */
+export const DEFAULT_SERVER_URL = "https://kraftreel.com";
+
 export function configDirectory() {
-    const value = process.env.YINGCE_CONFIG_DIR?.trim();
-    return value ? path.resolve(value) : path.join(os.homedir(), ".yingce");
+    const value = process.env.KRAFTREEL_CONFIG_DIR?.trim() || process.env.YINGCE_CONFIG_DIR?.trim();
+    if (value) return path.resolve(value);
+    const preferred = path.join(os.homedir(), ".kraftreel");
+    if (fs.existsSync(preferred)) return preferred;
+    const legacy = path.join(os.homedir(), ".yingce");
+    return fs.existsSync(legacy) ? legacy : preferred;
 }
 
 export function credentialsPath() { return path.join(configDirectory(), "credentials.json"); }
@@ -28,8 +35,7 @@ export function normalizeServerUrl(value: string) {
 }
 
 export function serverUrl() {
-    const value = process.env.YINGCE_SERVER_URL?.trim();
-    if (!value) throw new Error("请配置 YINGCE_SERVER_URL，例如 https://canvas.example.com");
+    const value = process.env.KRAFTREEL_SERVER_URL?.trim() || process.env.YINGCE_SERVER_URL?.trim() || DEFAULT_SERVER_URL;
     return normalizeServerUrl(value);
 }
 

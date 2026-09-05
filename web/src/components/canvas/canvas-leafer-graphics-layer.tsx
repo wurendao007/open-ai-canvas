@@ -169,7 +169,8 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
         const container = props.containerRef.current;
         if (!underlay || !overlay || !container) return;
         const rect = container.getBoundingClientRect();
-        syncViewport(rasterViewportRef.current, rect.width, rect.height, underlay, overlay, props);
+        // Guide changes only affect the overlay, not the connection viewport.
+        syncOverlayGuides(overlay, rasterViewportRef.current, rect.width, rect.height, props);
         if (isViewportPreview(container, viewportRef.current, rasterViewportRef.current)) {
             applyScenePreview(viewportRef.current, rasterViewportRef.current, underlay, overlay);
         }
@@ -387,12 +388,17 @@ function syncViewport(viewport: ViewportTransform, width: number, height: number
     if (props.selectedNodeBounds) syncSelectionBounds(overlay.selectionBounds, props.selectedNodeBounds, scale);
     overlay.selectionBounds.set({ strokeWidth: 1 / scale, cornerRadius: 12 / scale });
     overlay.draft.set({ strokeWidth: 1.4 / scale, dashPattern: [8 / scale, 8 / scale] });
+    syncOverlayGuides(overlay, viewport, width, height, props);
+}
+
+function syncOverlayGuides(overlay: OverlayScene, viewport: ViewportTransform, width: number, height: number, props: CanvasLeaferGraphicsLayerProps) {
+    const scale = Math.max(viewport.k, 0.05);
     overlay.guides.set({
         visible: typeof props.alignmentGuides.vertical === "number" || typeof props.alignmentGuides.horizontal === "number",
         path: guidePath(viewport, width, height, props.alignmentGuides),
         stroke: props.theme.accent.primary,
         strokeWidth: 1 / scale,
-        dashPattern: [5 / scale, 5 / scale],
+        dashPattern: [4 / scale, 4 / scale],
         opacity: 0.72,
     });
 }

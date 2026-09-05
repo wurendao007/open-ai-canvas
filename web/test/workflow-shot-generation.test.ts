@@ -1,10 +1,19 @@
 import { expect, test } from "bun:test";
 
-import { defaultConfig } from "../src/stores/use-config-store";
+import { createModelChannel, defaultConfig } from "../src/stores/use-config-store";
 import { submitBackendGenerationTask, type GenerationTaskDependencies } from "../src/services/api/generation-task";
 import type { GenerationTask } from "../src/services/api/task-center";
 import type { ProjectDetail } from "../src/services/api/projects";
 import { buildShotAssetReferenceContext, resolveShotAssetMentionPrompt } from "../src/pages/projects/detail/workflow-shot-references";
+
+// 提交前会校验模型确实选到了可用请求协议，光有模型名不够。这里补齐承载该模型的渠道，
+// 让用例覆盖真实提交路径，而不是绕过这条校验。
+const shotGenerationConfig = {
+    ...defaultConfig,
+    model: "MiniMax-H3",
+    videoModel: "MiniMax-H3",
+    channels: [createModelChannel({ id: "default", name: "默认渠道", baseUrl: "https://api.example.com/v1", apiKey: "test-key", interfaceType: "chat-completion", models: ["MiniMax-H3"] })],
+};
 
 test("production workbench does not silently drop bound voice samples before backend validation", async () => {
     const source = await Bun.file(new URL("../src/pages/projects/detail/workflow-production-workbench.tsx", import.meta.url)).text();
@@ -95,7 +104,7 @@ test("shot generation submits historical character image, current voice and asse
         projectId: "project-1",
         mode: "video",
         prompt,
-        config: { ...defaultConfig, model: "MiniMax-H3", videoModel: "MiniMax-H3" },
+        config: shotGenerationConfig,
         referenceImages: context.referenceImages,
         referenceAudios: context.referenceAudios,
         metadata: { shotId: "shot-1", videoEditOperation: "reference_to_video" },
@@ -138,10 +147,38 @@ test("background generation submission returns after task creation without waiti
         projectId: "project-1",
         mode: "video",
         prompt: "角色表演",
-        config: { ...defaultConfig, model: "MiniMax-H3", videoModel: "MiniMax-H3" },
+        config: shotGenerationConfig,
         metadata: { shotId: "shot-1", videoEditOperation: "reference_to_video" },
     }, dependencies);
 
     expect(submitted).toBe(task);
     expect(waitCalls).toBe(0);
+});
+
+test("text generation forwards stream and thinking preferences to the backend task", async () => {
+    let createdInput: Parameters<GenerationTaskDependencies["createTask"]>[0] | undefined;
+    const task = {
+        id: "text-task-1",
+        type: "canvas_text",
+        status: "queued",
+        prompt: "写一段对白",
+        attempts: 0,
+        createdAt: "2026-09-05T00:00:00.000Z",
+        updatedAt: "2026-09-05T00:00:00.000Z",
+    } satisfies GenerationTask;
+
+    await submitBackendGenerationTask({
+        mode: "text",
+        prompt: "写一段对白",
+        config: { ...shotGenerationConfig, textModel: "MiniMax-H3" },
+        streamText: false,
+        enableThinking: true,
+    }, {
+        createTask: async (input) => { createdInput = input; return task; },
+        waitTask: async () => { throw new Error("should not wait"); },
+        createId: () => "id-1",
+        now: () => "2026-09-05T00:00:00.000Z",
+    });
+
+    expect(createdInput?.input.textOptions).toEqual({ stream: false, thinking: true });
 });

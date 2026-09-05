@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type ReactNode, type RefObject } from "react";
 import { App, Button, Drawer, Modal, Popover, Spin, Tooltip } from "antd";
 import { Reorder } from "motion/react";
-import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, Clapperboard, Clock3, Copy, Download, FileText, Film, History, Image as ImageIcon, LoaderCircle, Maximize2, MessageSquareText, Minimize2, Music2, Plus, RefreshCw, Search, SlidersHorizontal, Sparkles, Trash2, WandSparkles, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, Clapperboard, Clock3, Copy, Download, FileText, Film, History, Image as ImageIcon, LoaderCircle, Maximize2, MessageSquareText, Minimize2, Music2, Plus, RefreshCw, Search, SlidersHorizontal, Sparkles, Trash2, WandSparkles, Waves, X } from "lucide-react";
 import { Link } from "react-router";
 
 import { AIMessageMarkdown } from "@/components/ai/ai-message-markdown";
@@ -30,8 +30,8 @@ import { inferVideoOperation, resolveCompatibleModel, mergedImageCapabilityConfi
 import { isGenerationTaskCancelled, runBackendGenerationTask, runBackendGenerationTaskBatch, type BackendGenerationResult } from "@/services/api/generation-task";
 import { listAddedSkills, type Skill } from "@/services/api/skills";
 import { subscribeGenerationTasks, type GenerationTask } from "@/services/api/task-center";
-import { isLocalDreaminaWaitStopped, localDreaminaCancellationMessage } from "@/services/local-dreamina-task-projection";
 import { resourceDownloadUrlFromUrl, resolveResourceUrl } from "@/services/api/resources";
+import { ResourceDownloadButton } from "@/components/resource-download-button";
 import { uploadMediaFile } from "@/services/file-storage";
 import { uploadImage } from "@/services/image-storage";
 import { consumeGenerationTaskMessage, generationTaskMaterializedUrls, materializeGenerationTaskAssets, projectGenerationTaskResult } from "@/services/project-asset-sync";
@@ -40,6 +40,7 @@ import { beginGenerationConsumer, runGenerationConsumer } from "@/services/gener
 import { loadCreationConversations, pendingCreationTaskIds, pendingCreationTaskKey, removeCreationConversationSnapshot, saveCreationConversations, updateCreationConversationSnapshot } from "@/services/creation-conversation-store";
 import { recoverCreationTextTask } from "@/services/creation-text-task-recovery";
 import { modelDisplayName, modelOptionName, resolveModelChannel, selectableModelsByCapability, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
+import { useCreationPreferencesStore } from "@/stores/use-creation-preferences-store";
 import { useAssetStore, type Asset } from "@/stores/use-asset-store";
 import { useAppearanceStore } from "@/stores/use-appearance-store";
 import { useUserStore } from "@/stores/use-user-store";
@@ -139,6 +140,10 @@ export default function CreatePage() {
     const { message: toast, modal } = App.useApp();
     const brandName = useAppearanceStore((state) => state.appearance.brandName);
     const config = useEffectiveConfig();
+    const composerPreferencesHydrated = useCreationPreferencesStore((state) => state.hydrated);
+    const rememberMode = useCreationPreferencesStore((state) => state.rememberMode);
+    const rememberImageSettings = useCreationPreferencesStore((state) => state.rememberImageSettings);
+    const rememberVideoSettings = useCreationPreferencesStore((state) => state.rememberVideoSettings);
     const promptOptimizerInstallation = usePluginStore((state) => state.installations.find((item) => item.manifest.id === PROMPT_OPTIMIZER_PLUGIN_ID));
     const promptOptimizerEnabled = usePluginStore((state) => state.pluginStates[PROMPT_OPTIMIZER_PLUGIN_ID]?.effectiveEnabled ?? Boolean(state.installations.find((item) => item.manifest.id === PROMPT_OPTIMIZER_PLUGIN_ID)?.enabled));
     const promptOptimizerProvider = useMemo<PromptOptimizerProvider | null>(() => {
@@ -165,6 +170,8 @@ export default function CreatePage() {
     const [quality, setQuality] = useState("auto");
     const [videoQuality, setVideoQuality] = useState(config.vquality || "720");
     const [count, setCount] = useState(String(Math.max(1, Math.min(4, Number(config.count) || 1))));
+    const [textStreaming, setTextStreaming] = useState(true);
+    const [textThinking, setTextThinking] = useState(false);
     const [busy, setBusy] = useState(false);
     const [referenceReplacementBusy, setReferenceReplacementBusy] = useState(false);
     const [viewMode, setViewMode] = useState<CreationViewMode>("chat");
@@ -181,6 +188,7 @@ export default function CreatePage() {
     const retryPreparingRef = useRef(new Set<string>());
     const pendingRetryRef = useRef<{ context: CreationRetryContext; lockKey: string } | null>(null);
     const [retrySequence, setRetrySequence] = useState(0);
+    const [composerPreferencesInitialized, setComposerPreferencesInitialized] = useState(false);
     promptRef.current = prompt;
     attachmentsRef.current = attachments;
 
@@ -227,32 +235,52 @@ export default function CreatePage() {
     const visibleShotIndex = shots.length ? selectedShotIndex >= 0 && selectedShotIndex < shots.length ? selectedShotIndex : shots.length - 1 : -1;
 
     useEffect(() => {
-        if (mode !== "image") return;
+        if (!composerPreferencesHydrated || composerPreferencesInitialized) return;
+        const saved = useCreationPreferencesStore.getState().preferences;
+        const nextMode = saved.mode || "video";
+        setMode(nextMode);
+        if (nextMode === "image" && saved.image) {
+            if (saved.image.ratio) setRatio(saved.image.ratio);
+            if (saved.image.quality) setQuality(saved.image.quality);
+            if (saved.image.count) setCount(saved.image.count);
+        }
+        if (nextMode === "video" && saved.video) {
+            if (saved.video.ratio) setRatio(saved.video.ratio);
+            if (saved.video.seconds) setSeconds(saved.video.seconds);
+            if (saved.video.videoQuality) setVideoQuality(saved.video.videoQuality);
+        }
+        setComposerPreferencesInitialized(true);
+    }, [composerPreferencesHydrated, composerPreferencesInitialized]);
+
+    useEffect(() => {
+        if (!composerPreferencesHydrated || !composerPreferencesInitialized || mode !== "image") return;
+        const saved = useCreationPreferencesStore.getState().preferences.image;
         // 前台逻辑模型的默认参数优先于旧的全局创作参数；否则旧的合法值会一直覆盖后台刚配置的默认值。
         const normalized = normalizeImageValue(imageProfile, {
-            size: imageProfile.size.default,
-            quality: imageProfile.quality.default,
-            count,
+            size: saved?.ratio || imageProfile.size.default,
+            quality: saved?.quality || imageProfile.quality.default,
+            count: saved?.count || count,
         });
         setRatio(normalized.size);
         setQuality(normalized.quality);
         setCount(normalized.count);
-    }, [mode, selectedModel, imageProfile]);
+    }, [composerPreferencesHydrated, composerPreferencesInitialized, mode, selectedModel, imageProfile]);
 
     useEffect(() => {
-        if (mode !== "video") return;
+        if (!composerPreferencesHydrated || !composerPreferencesInitialized || mode !== "video") return;
+        const saved = useCreationPreferencesStore.getState().preferences.video;
         // 前台逻辑模型的默认参数必须直接落到创作端状态，提交任务时才不会被旧状态覆盖。
         const normalized = normalizeVideoValue(videoProfile, {
-            seconds: String(videoProfile.duration.default),
-            ratio: videoProfile.defaultRatio,
-            resolution: videoProfile.defaultResolution,
+            seconds: saved?.seconds || String(videoProfile.duration.default),
+            ratio: saved?.ratio || videoProfile.defaultRatio,
+            resolution: saved?.videoQuality || videoProfile.defaultResolution,
         });
         setSeconds(normalized.seconds);
         setRatio(normalized.ratio);
         setVideoQuality(normalized.resolution.replace(/p$/i, ""));
         const maxReferences = videoProfile.operations.includes("image_to_video") ? videoProfile.references.maxImages : 0;
         if (attachments.length > maxReferences) setAttachments((current) => current.slice(0, maxReferences));
-    }, [mode, selectedModel, videoProfile]);
+    }, [composerPreferencesHydrated, composerPreferencesInitialized, mode, selectedModel, videoProfile]);
 
     useEffect(() => {
         const reconciled = reconcileCreationAttachmentLimit(attachments, mentionReferences, maxReferences);
@@ -367,11 +395,34 @@ export default function CreatePage() {
 
     const selectMode = (next: CreationMode) => {
         setMode(next);
+        rememberMode(next);
         const nextModels = selectableModelsByCapability(config, next);
         const current = next === "text" ? config.textModel : next === "image" ? config.imageModel : config.videoModel;
         if (!nextModels.includes(current) && nextModels[0]) {
             updateConfig(next === "text" ? "textModel" : next === "image" ? "imageModel" : "videoModel", nextModels[0]);
         }
+    };
+
+    const setComposerRatio = (value: string) => {
+        setRatio(value);
+        if (mode === "image") rememberImageSettings({ ratio: value });
+        if (mode === "video") rememberVideoSettings({ ratio: value });
+    };
+    const setComposerSeconds = (value: string) => {
+        setSeconds(value);
+        if (mode === "video") rememberVideoSettings({ seconds: value });
+    };
+    const setComposerQuality = (value: string) => {
+        setQuality(value);
+        if (mode === "image") rememberImageSettings({ quality: value });
+    };
+    const setComposerVideoQuality = (value: string) => {
+        setVideoQuality(value);
+        if (mode === "video") rememberVideoSettings({ videoQuality: value });
+    };
+    const setComposerCount = (value: string) => {
+        setCount(value);
+        if (mode === "image") rememberImageSettings({ count: value });
     };
 
     const externalLibraryItems = useMemo<AssetLibraryPickerItem[]>(
@@ -562,7 +613,7 @@ export default function CreatePage() {
         const referenceMetadata = skillExecution.metadata;
         followLatestMessageRef.current = true;
         const userMessage = newMessage("user", text, { mode, model: selectedModel, attachments, references, settings });
-        const assistantMessage = newMessage("assistant", "", { mode, model: selectedModel, status: mode === "text" ? "streaming" : "pending", settings, ...retryContext });
+        const assistantMessage = newMessage("assistant", "", { mode, model: selectedModel, status: mode === "text" && textStreaming ? "streaming" : "pending", settings, ...retryContext });
         const originConversationId = activeConversation.id;
         const updateOriginAssistant = (updater: (item: CreationMessage) => CreationMessage) => updateConversationMessage(originConversationId, assistantMessage.id, updater);
         const boundTaskIds = new Set<string>();
@@ -618,9 +669,11 @@ export default function CreatePage() {
                     referenceAudios,
                     textHistory: (activeConversation.messages || []).filter((item) => item.content.trim()).map((item) => ({ role: item.role, content: item.content })),
                     signal: requestLifecycle.signal,
-                    metadata: { source: "create-page", conversationId: activeConversation.id, messageId: assistantMessage.id, ...referenceMetadata },
-                    onTaskUpdate: bindTask,
-                    onTextDelta: (value) => updateOriginAssistant((item) => ({ ...item, content: value })),
+                     metadata: { source: "create-page", conversationId: activeConversation.id, messageId: assistantMessage.id, ...referenceMetadata },
+                     onTaskUpdate: bindTask,
+                     streamText: textStreaming,
+                     enableThinking: textThinking,
+                     onTextDelta: textStreaming ? (value) => updateOriginAssistant((item) => ({ ...item, content: value })) : undefined,
                     ...retryContext,
                 }));
                 if (!result.text?.trim()) throw new Error("后端任务没有返回文本");
@@ -877,15 +930,19 @@ export default function CreatePage() {
         config,
         onModelChange: (value: string) => updateConfig(mode === "text" ? "textModel" : mode === "image" ? "imageModel" : "videoModel", value),
         ratio,
-        setRatio,
+        setRatio: setComposerRatio,
         seconds,
-        setSeconds,
+        setSeconds: setComposerSeconds,
         quality,
-        setQuality,
+        setQuality: setComposerQuality,
         videoQuality,
-        setVideoQuality,
+        setVideoQuality: setComposerVideoQuality,
         count,
-        setCount,
+        setCount: setComposerCount,
+        textStreaming,
+        setTextStreaming,
+        textThinking,
+        setTextThinking,
         promptOptimizerProvider,
         composerFocusRef,
         placeholderOverride: viewMode === "storyboard" && composingNextShot ? `${formatShotOrdinal(nextShotNumber - 1)} · 写下这一镜的镜头、画面或故事` : undefined,
@@ -1089,7 +1146,7 @@ function MediaResult({ item, onRetryFailure, onCreateVariant }: { item: Creation
     const isVideo = item.mode === "video";
     return <div className="creation-media-result">
         {isVideo ? <button type="button" className="creation-video-result" onClick={() => { setPreviewType("video"); setPreviewStorageKey(resultStorageKeys[0]); setPreviewUrl(resultUrls[0]); }} aria-label="预览生成视频"><ResolvedResourceVideoSource muted playsInline preload="metadata" src={resultUrls[0]} storageKey={resultStorageKeys[0]} /><span><Maximize2 />预览视频</span></button> : <div className="creation-image-result-grid">{resultUrls.map((url, index) => <button key={url} type="button" className="creation-image-result" onClick={() => { setPreviewType("image"); setPreviewStorageKey(resultStorageKeys[index]); setPreviewUrl(url); }} aria-label="预览生成图片"><CachedResourceImage storageKey={resultStorageKeys[index]} src={url} alt="生成结果" loading="lazy" decoding="async" /><span><Maximize2 /></span></button>)}</div>}
-        <div className="creation-media-actions"><span>{isVideo ? "视频结果" : `${resultUrls.length} 张图片`}</span><button type="button" onClick={onCreateVariant}><RefreshCw />生成同款</button><Link to={canvasPath}>{resultAssetIds.length ? "添加到画布" : "打开画布"}</Link>{resultUrls.map((url, index) => <a key={`${url}-download`} href={resourceDownloadUrlFromUrl(url, resultStorageKeys[index])} download>{resultUrls.length > 1 ? `下载 ${index + 1}` : <><Download />下载</>}</a>)}</div>
+        <div className="creation-media-actions"><span>{isVideo ? "视频结果" : `${resultUrls.length} 张图片`}</span><button type="button" onClick={onCreateVariant}><RefreshCw />生成同款</button><Link to={canvasPath}>{resultAssetIds.length ? "添加到画布" : "打开画布"}</Link>{resultUrls.map((url, index) => <ResourceDownloadButton key={`${url}-download`} url={resourceDownloadUrlFromUrl(url, resultStorageKeys[index])}>{resultUrls.length > 1 ? `下载 ${index + 1}` : <><Download />下载</>}</ResourceDownloadButton>)}</div>
         <CreationMediaPreviewModal url={previewUrl} type={previewType} storageKey={previewStorageKey} onClose={() => { setPreviewUrl(""); setPreviewStorageKey(undefined); }} />
     </div>;
 }
@@ -1162,6 +1219,10 @@ type ComposerProps = {
     setVideoQuality: (value: string) => void;
     count: string;
     setCount: (value: string) => void;
+    textStreaming: boolean;
+    setTextStreaming: (value: boolean) => void;
+    textThinking: boolean;
+    setTextThinking: (value: boolean) => void;
     promptOptimizerProvider: PromptOptimizerProvider | null;
     composerFocusRef: RefObject<HTMLTextAreaElement | null>;
     placeholderOverride?: string;
@@ -1397,6 +1458,10 @@ function CreationComposer(props: ComposerProps) {
 				<ModelPicker config={props.config} value={props.model} onChange={props.onModelChange} capability={props.mode} requirements={props.modelRequirements} className="creation-model-picker" placeholder={`选择${modeLabels[props.mode]}模型`} showSelectedPrice={false} showOptionPrices variant="creation" />
                 {props.mode === "video" || (props.mode === "image" && imageSettingsSupported) ? <GenerationSettingsMenu {...props} /> : null}
                 {props.mode === "video" ? <DurationMenu profile={props.videoProfile} seconds={props.seconds} onChange={props.setSeconds} /> : null}
+                {props.mode === "text" ? <>
+                    <Tooltip title={props.textStreaming ? "流式输出已开启" : "流式输出已关闭"}><button type="button" className="creation-chat-control" aria-pressed={props.textStreaming} onClick={() => props.setTextStreaming(!props.textStreaming)}><Waves /><span>流式</span></button></Tooltip>
+                    <Tooltip title={props.textThinking ? "思考已开启，会展示模型返回的推理摘要" : "开启模型思考"}><button type="button" className="creation-chat-control" aria-pressed={props.textThinking} onClick={() => props.setTextThinking(!props.textThinking)}><Brain /><span>思考</span></button></Tooltip>
+                </> : null}
             </div>
             <Button
                 type="text"
@@ -1657,7 +1722,7 @@ function StoryboardShotCard({ shot, shotNumber, modelName, busy, onRetryFailure,
                 {status === "error" ? <button type="button" onClick={onRetryFailure} disabled={busy}><RefreshCw />重新生成</button> : null}
                 {status === "done" && result?.resultUrls?.length ? <button type="button" onClick={onCreateVariant} disabled={busy}><RefreshCw />生成变体</button> : null}
                 {status === "done" && resultUrls.length ? <Link to={canvasPath}>{canvasHandoffPath ? "添加到画布" : "打开画布"}</Link> : null}
-                {resultUrls.map((url, index) => <a key={`${url}-download`} href={resourceDownloadUrlFromUrl(url, resultStorageKeys[index])} download>{resultUrls.length > 1 ? `下载 ${index + 1}` : <><Download />下载</>}</a>)}
+                {resultUrls.map((url, index) => <ResourceDownloadButton key={`${url}-download`} url={resourceDownloadUrlFromUrl(url, resultStorageKeys[index])}>{resultUrls.length > 1 ? `下载 ${index + 1}` : <><Download />下载</>}</ResourceDownloadButton>)}
             </div>
         </header>
         <div className="storyboard-workbench-card-body">
@@ -1748,7 +1813,7 @@ function StoryboardShotResult({ result, resultStorageKeys, onRetryFailure, onCre
     return <>
         {mode === "video" ? <button type="button" className="creation-video-result" onClick={() => openPreview(resultUrls[0], "video", resultStorageKeys[0])} aria-label="预览生成视频"><ResolvedResourceVideoSource muted playsInline preload="metadata" className="size-full object-cover" src={resultUrls[0]} storageKey={resultStorageKeys[0]} /><span><Maximize2 />预览视频</span></button> : <div className="creation-image-result-grid">{resultUrls.map((url, index) => <button key={url} type="button" className="creation-image-result" onClick={() => openPreview(url, "image", resultStorageKeys[index])} aria-label="预览生成图片"><CachedResourceImage storageKey={resultStorageKeys[index]} src={url} alt="生成结果" loading="lazy" decoding="async" /><span><Maximize2 /></span></button>)}</div>}
         {note ? <p className="storyboard-workbench-director-note"><span>导演手记</span>{note}</p> : null}
-        <div className="storyboard-workbench-media-meta"><span>{mode === "video" ? "视频结果" : `${resultUrls.length} 张图片`}</span><button type="button" onClick={onCreateVariant}><RefreshCw />生成变体</button><Link to={canvasPath}>{canvasHandoffAvailable ? "添加到画布" : "打开画布"}</Link>{resultUrls.map((url, index) => <a key={`${url}-download`} href={resourceDownloadUrlFromUrl(url, resultStorageKeys[index])} download>{resultUrls.length > 1 ? `下载 ${index + 1}` : <><Download />下载</>}</a>)}</div>
+        <div className="storyboard-workbench-media-meta"><span>{mode === "video" ? "视频结果" : `${resultUrls.length} 张图片`}</span><button type="button" onClick={onCreateVariant}><RefreshCw />生成变体</button><Link to={canvasPath}>{canvasHandoffAvailable ? "添加到画布" : "打开画布"}</Link>{resultUrls.map((url, index) => <ResourceDownloadButton key={`${url}-download`} url={resourceDownloadUrlFromUrl(url, resultStorageKeys[index])}>{resultUrls.length > 1 ? `下载 ${index + 1}` : <><Download />下载</>}</ResourceDownloadButton>)}</div>
         <CreationMediaPreviewModal url={previewUrl} type={previewType} storageKey={previewStorageKey} onClose={() => { setPreviewUrl(""); setPreviewStorageKey(undefined); }} />
     </>;
 }
@@ -1842,8 +1907,7 @@ function reconcileCreationTaskMessages(conversations: CreationConversation[], ta
                 return { ...message, status: "done" as const, content, resultUrls, error: undefined, taskIds: nextTaskIds };
             }
             if (matches.every((task) => task.status === "cancelled")) {
-                const localOnly = matches.find(isLocalDreaminaWaitStopped);
-                return { ...message, status: "cancelled" as const, content: localOnly ? localDreaminaCancellationMessage(localOnly) : "已停止", error: undefined, taskIds: nextTaskIds };
+                return { ...message, status: "cancelled" as const, content: "已停止", error: undefined, taskIds: nextTaskIds };
             }
             const failed = matches.find((task) => task.status === "failed" || task.creationError);
             return { ...message, status: "error" as const, content: "生成失败", error: generationErrorMessage(failed?.creationError || failed?.error || "任务已结束，但生成结果暂时无法读取"), taskIds: nextTaskIds };

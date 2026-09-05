@@ -11,6 +11,8 @@ import { CanvasNodeType, type CanvasNodeData } from "../src/types/canvas";
 import { detectVideoAudioTrack, detectVideoAudioTrackFromBlob, detectVideoAudioTrackFromUrl } from "../src/lib/video-poster";
 
 const canvasNodeContentSource = readFileSync(resolve(import.meta.dir, "../src/components/canvas/canvas-node-content.tsx"), "utf8");
+const storyboardAssetsCellSource = readFileSync(resolve(import.meta.dir, "../src/components/canvas/storyboard-assets-cell.tsx"), "utf8");
+const resolvedCanvasReferencesSource = readFileSync(resolve(import.meta.dir, "../src/components/canvas/use-resolved-canvas-resource-references.ts"), "utf8");
 const canvasAudioPlayerSource = readFileSync(resolve(import.meta.dir, "../src/components/canvas/canvas-audio-player.tsx"), "utf8");
 const canvasAudioPlaybackSource = readFileSync(resolve(import.meta.dir, "../src/services/canvas-audio-playback.ts"), "utf8");
 const fileStorageSource = readFileSync(resolve(import.meta.dir, "../src/services/file-storage.ts"), "utf8");
@@ -18,6 +20,7 @@ const resourcesApiSource = readFileSync(resolve(import.meta.dir, "../src/service
 const resourceBlobCacheSource = readFileSync(resolve(import.meta.dir, "../src/services/resource-blob-cache.ts"), "utf8");
 const canvasMentionSource = readFileSync(resolve(import.meta.dir, "../src/components/canvas/canvas-resource-mention-textarea.tsx"), "utf8");
 const canvasNodeSource = readFileSync(resolve(import.meta.dir, "../src/components/canvas/canvas-node.tsx"), "utf8");
+const canvasNodeSearchModalSource = readFileSync(resolve(import.meta.dir, "../src/components/canvas/canvas-node-search-modal.tsx"), "utf8");
 const canvasVideoPreviewSource = readFileSync(resolve(import.meta.dir, "../src/services/canvas-video-preview.ts"), "utf8");
 const videoPlayerSource = readFileSync(resolve(import.meta.dir, "../src/components/video-player.tsx"), "utf8");
 const canvasProjectSource = readFileSync(resolve(import.meta.dir, "../src/pages/canvas/project.tsx"), "utf8");
@@ -52,6 +55,11 @@ describe("canvas dimension header rendering", () => {
 });
 
 describe("large canvas media rendering", () => {
+    test("uses a video's poster resource for canvas node search thumbnails", () => {
+        expect(canvasNodeSearchModalSource).toContain("const previewStorageKey = node.type === CanvasNodeType.Video ? node.metadata?.videoPreview?.storageKey : node.metadata?.storageKey;");
+        expect(canvasNodeSearchModalSource).toContain("resourceIdFromStorageKey(previewStorageKey) || resourceIdFromFileUrl(mediaSource)");
+    });
+
     test("keeps rendered nodes mounted longer than newly entering nodes", () => {
         expect(canvasNodeRenderPadding(true, false)).toBe(128);
         expect(canvasNodeRenderPadding(true, true)).toBe(640);
@@ -111,6 +119,17 @@ describe("large canvas media rendering", () => {
         expect(canvasNodeContentSource).toContain("const resourceId = resourceIdFromStorageKey(rawStorageKey) || resourceIdFromFileUrl(fallback);");
         expect(canvasNodeContentSource).toContain("const storageKey = resourceId ? resourceStorageKey(resourceId) : rawStorageKey;");
         expect(canvasNodeContentSource).toContain("resourceIdFromFileUrl");
+    });
+
+    test("does not mount a legacy file fallback before storyboard media resolves", () => {
+        expect(storyboardAssetsCellSource).toContain("const [source, setSource] = useState(safeFallback);");
+        expect(storyboardAssetsCellSource).not.toContain("const [source, setSource] = useState(fallback);");
+    });
+
+    test("does not mount legacy file URLs in prompt reference previews while resolving", () => {
+        expect(resolvedCanvasReferencesSource).toContain('previewUrl: ""');
+        expect(resolvedCanvasReferencesSource).toContain("resourceIdFromFileUrl(reference.previewUrl)");
+        expect(resolvedCanvasReferencesSource).toContain("referencePreviewStorageKey(reference)");
     });
 
     test("allows failed or empty first-frame requests to retry", () => {

@@ -12,7 +12,8 @@ import { modelRequestOptions, resolveCompatibleModel, type ModelRequirements } f
 import { navigateToSettings } from "@/lib/settings-navigation";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { resolveMediaUrl } from "@/services/file-storage";
-import { resourceFallbackUrl, resourceIdFromFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
+import { cacheResourceObjectUrl } from "@/services/resource-blob-cache";
+import { resourceIdFromStorageKey } from "@/services/api/resources";
 import { modelDisplayName, type AiConfig } from "@/stores/use-config-store";
 import { type CanvasConnection, type CanvasNodeData, type CanvasVideoEditOperation } from "@/types/canvas";
 import type { TimelineProject } from "@/types/timeline";
@@ -81,16 +82,22 @@ export function CanvasVideoSegmentDialog({ node, nodes, connections, open, mode,
         setOperation(profile?.operations.includes("extend") ? "extend" : (profile?.operations[0] as CanvasVideoEditOperation | undefined) || "extend");
         const storageKey = node.metadata?.storageKey || "";
         const fallback = node.metadata?.content || "";
-        const resourceId = resourceIdFromStorageKey(storageKey) || resourceIdFromFileUrl(fallback);
-        const safeFallback = resourceId ? resourceFallbackUrl(resourceId, fallback) : fallback;
         const applyUrl = (url: string) => {
             if (!cancelled) setVideoUrl(url);
         };
-        void resolveMediaUrl(storageKey, safeFallback)
-            .then(applyUrl)
-            .catch(() => {
-                if (!cancelled) setVideoError(true);
-            });
+        if (resourceIdFromStorageKey(storageKey)) {
+            void cacheResourceObjectUrl(storageKey)
+                .then((cached) => {
+                    if (cancelled) return;
+                    if (cached) setVideoUrl(cached);
+                    else void resolveMediaUrl(storageKey, fallback).then(applyUrl);
+                })
+                .catch(() => {
+                    if (!cancelled) void resolveMediaUrl(storageKey, fallback).then(applyUrl);
+                });
+        } else {
+            void resolveMediaUrl(storageKey, fallback).then(applyUrl);
+        }
         return () => {
             cancelled = true;
         };

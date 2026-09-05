@@ -126,6 +126,7 @@ export const CanvasProjectWorldLayers = memo(function CanvasProjectWorldLayers(p
                         key={node.id}
                         data={node}
                         dragOffset={props.dragPreview?.nodeIds.has(node.id) ? props.dragPreview : undefined}
+                        isDragging={Boolean(props.dragPreview?.nodeIds.has(node.id))}
                         childNodes={framePreviewNodes(node)}
                         scale={viewportScale}
                         isSelected={props.selectedNodeIds.has(node.id)}
@@ -143,6 +144,7 @@ export const CanvasProjectWorldLayers = memo(function CanvasProjectWorldLayers(p
                         key={node.id}
                         data={node}
                         dragOffset={props.dragPreview?.nodeIds.has(node.id) ? props.dragPreview : undefined}
+                        isDragging={Boolean(props.dragPreview?.nodeIds.has(node.id))}
                         scale={viewportScale}
                         isSelected={props.selectedNodeIds.has(node.id)}
                         mediaActive={activeMediaNodeId === node.id}

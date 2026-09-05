@@ -135,7 +135,8 @@ function CanvasNodeSearchThumbnail({ node }: { node: CanvasNodeData }) {
     const commonStyle = { borderColor: "color-mix(in srgb, var(--foreground) 9%, transparent)", background: "color-mix(in srgb, var(--foreground) 5%, transparent)" };
 
     if (mediaSource && !failed) {
-        const resourceId = resourceIdFromStorageKey(node.metadata?.storageKey) || resourceIdFromFileUrl(mediaSource);
+        const previewStorageKey = node.type === CanvasNodeType.Video ? node.metadata?.videoPreview?.storageKey : node.metadata?.storageKey;
+        const resourceId = resourceIdFromStorageKey(previewStorageKey) || resourceIdFromFileUrl(mediaSource);
         if (resourceId) return <CachedResourceImage storageKey={resourceStorageKey(resourceId)} src={mediaSource} alt="" width={64} height={44} loading="lazy" decoding="async" className={commonClass} style={commonStyle} onError={() => setFailed(true)} />;
         return <img src={mediaSource} alt="" width={64} height={44} loading="lazy" decoding="async" className={commonClass} style={commonStyle} onError={() => setFailed(true)} />;
     }

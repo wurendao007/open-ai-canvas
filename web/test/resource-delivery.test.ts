@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { clearResourceClientCaches, getResourceBlob, getResourceDirectUrl, getResourceStorageMode, isResourceUrl, resourceDownloadUrl, resourceDownloadUrlFromUrl, resourceFallbackUrl, resourceIdFromFileUrl } from "../src/services/api/resources";
+import { clearResourceClientCaches, getResourceBlob, getResourceDirectUrl, getResourceStorageMode, isResourceUrl, resourceDownloadUrl, resourceDownloadUrlFromUrl, resourceFallbackUrl, resourceIdFromFileUrl, startResourceDownload } from "../src/services/api/resources";
 import { apiClient } from "../src/services/api/request";
 import { getActiveUserScope, setActiveUserScope } from "../src/lib/user-scope";
 
@@ -383,6 +383,32 @@ describe("resource Blob delivery", () => {
         }
     });
 
+    test("does not proxy when the direct Blob request is cancelled", async () => {
+        const previousAdapter = apiClient.defaults.adapter;
+        const previousFetch = globalThis.fetch;
+        const requests: string[] = [];
+        const controller = new AbortController();
+        apiClient.defaults.adapter = async (config) => ({
+            data: { code: 0, data: { url: "https://storage.example/cancelled.jpg?signature=short-lived" }, msg: "" },
+            status: 200,
+            statusText: "OK",
+            headers: {},
+            config,
+        });
+        globalThis.fetch = (async (input) => {
+            requests.push(String(input));
+            throw new DOMException("The operation was aborted", "AbortError");
+        }) as typeof fetch;
+
+        try {
+            await expect(getResourceBlob("resource:cancelled", { signal: controller.signal })).rejects.toMatchObject({ name: "AbortError" });
+            expect(requests).toEqual(["https://storage.example/cancelled.jpg?signature=short-lived"]);
+        } finally {
+            apiClient.defaults.adapter = previousAdapter;
+            globalThis.fetch = previousFetch;
+        }
+    });
+
     test("does not proxy when the caller explicitly requires direct storage delivery", async () => {
         const previousAdapter = apiClient.defaults.adapter;
         const previousFetch = globalThis.fetch;
@@ -407,4 +433,165 @@ describe("resource Blob delivery", () => {
             globalThis.fetch = previousFetch;
         }
     });
+});
+
+describe("resource download authorization", () => {
+    test("fetches a signed provider object as Blob before starting the browser download", async () => {
+        const previousAdapter = apiClient.defaults.adapter;
+        const previousDocument = globalThis.document;
+        const previousFetch = globalThis.fetch;
+        const previousCreateObjectURL = URL.createObjectURL;
+        const previousRevokeObjectURL = URL.revokeObjectURL;
+        let clickedHref = "";
+        let clickedDownload = "";
+        let fetched: { input: string; credentials?: RequestCredentials } | undefined;
+        let revoked = "";
+        const anchor = {
+            href: "",
+            rel: "",
+            download: "",
+            style: { display: "" },
+            click() {
+                clickedHref = this.href;
+                clickedDownload = this.download;
+            },
+            remove() {},
+        };
+        Object.defineProperty(globalThis, "document", {
+            configurable: true,
+            value: {
+                createElement: () => anchor,
+                body: { appendChild() {} },
+            },
+        });
+        apiClient.defaults.adapter = async (config) => {
+            expect(config.url).toBe("/resources/download-direct/direct-url");
+            expect(config.params).toEqual({ download: 1 });
+            return {
+                data: { code: 0, data: { url: "https://storage.example/object.jpg?response-content-disposition=attachment%3B%20filename%3Dobject.jpg" }, msg: "" },
+                status: 200,
+                statusText: "OK",
+                headers: {},
+                config,
+            };
+        };
+        globalThis.fetch = (async (input, init) => {
+            fetched = { input: String(input), credentials: init?.credentials };
+            return new Response("image-bytes", { status: 200, headers: { "Content-Type": "image/jpeg" } });
+        }) as typeof fetch;
+        URL.createObjectURL = (() => "blob:download-direct") as typeof URL.createObjectURL;
+        URL.revokeObjectURL = ((value) => {
+            revoked = value;
+        }) as typeof URL.revokeObjectURL;
+        try {
+            await startResourceDownload(resourceDownloadUrl("download-direct"), "fallback.jpg");
+            expect(fetched).toEqual({
+                input: "https://storage.example/object.jpg?response-content-disposition=attachment%3B%20filename%3Dobject.jpg",
+                credentials: "omit",
+            });
+            expect(clickedHref).toBe("blob:download-direct");
+            expect(clickedDownload).toBe("fallback.jpg");
+            expect(revoked).toBe("blob:download-direct");
+        } finally {
+            apiClient.defaults.adapter = previousAdapter;
+            globalThis.fetch = previousFetch;
+            URL.createObjectURL = previousCreateObjectURL;
+            URL.revokeObjectURL = previousRevokeObjectURL;
+            Object.defineProperty(globalThis, "document", { configurable: true, value: previousDocument });
+        }
+    });
+
+    test("keeps an explicitly stable public URL after the signing TTL", async () => {
+        const previousAdapter = apiClient.defaults.adapter;
+        const previousNow = Date.now;
+        const startedAt = 1_800_000_000_000;
+        let now = startedAt;
+        let apiCalls = 0;
+        Date.now = () => now;
+        apiClient.defaults.adapter = async (config) => {
+            apiCalls += 1;
+            return {
+                data: { code: 0, data: { url: "https://kraftreel.cn-nb2.rains3.com/kraftreel/objects/34/object.png", stable: true }, msg: "" },
+                status: 200,
+                statusText: "OK",
+                headers: {},
+                config,
+            };
+        };
+        try {
+            await expect(getResourceDirectUrl("resource:stable-public-url")).resolves.toContain("rains3.com");
+            now += 6 * 60 * 1000;
+            await expect(getResourceDirectUrl("resource:stable-public-url")).resolves.toContain("rains3.com");
+            expect(apiCalls).toBe(1);
+        } finally {
+            Date.now = previousNow;
+            apiClient.defaults.adapter = previousAdapter;
+        }
+    });
+
+    test("throws instead of navigating when the provider download is not successful", async () => {
+        const previousAdapter = apiClient.defaults.adapter;
+        const previousDocument = globalThis.document;
+        const previousFetch = globalThis.fetch;
+        Object.defineProperty(globalThis, "document", {
+            configurable: true,
+            value: {
+                createElement: () => ({ href: "", rel: "", download: "", style: { display: "" }, click() {}, remove() {} }),
+                body: { appendChild() {} },
+            },
+        });
+        apiClient.defaults.adapter = async (config) => ({
+            data: { code: 0, data: { url: "https://storage.example/missing.jpg" }, msg: "" },
+            status: 200,
+            statusText: "OK",
+            headers: {},
+            config,
+        });
+        globalThis.fetch = (async () => new Response("missing", { status: 404 })) as typeof fetch;
+        try {
+            await expect(startResourceDownload(resourceDownloadUrl("download-missing"))).rejects.toThrow("资源下载失败");
+        } finally {
+            apiClient.defaults.adapter = previousAdapter;
+            globalThis.fetch = previousFetch;
+            Object.defineProperty(globalThis, "document", { configurable: true, value: previousDocument });
+        }
+    });
+
+    test("keeps local resources on the attachment file route", async () => {
+        const previousAdapter = apiClient.defaults.adapter;
+        const previousDocument = globalThis.document;
+        let clickedHref = "";
+        const anchor = {
+            href: "",
+            rel: "",
+            download: "",
+            style: { display: "" },
+            click() {
+                clickedHref = this.href;
+            },
+            remove() {},
+        };
+        Object.defineProperty(globalThis, "document", {
+            configurable: true,
+            value: {
+                createElement: () => anchor,
+                body: { appendChild() {} },
+            },
+        });
+        apiClient.defaults.adapter = async () => ({
+            data: { code: 0, data: { url: "", proxy: true }, msg: "" },
+            status: 200,
+            statusText: "OK",
+            headers: {},
+            config: {} as never,
+        });
+        try {
+            await startResourceDownload(resourceDownloadUrl("download-local"));
+            expect(clickedHref).toBe("/api/resources/download-local/file?download=1");
+        } finally {
+            apiClient.defaults.adapter = previousAdapter;
+            Object.defineProperty(globalThis, "document", { configurable: true, value: previousDocument });
+        }
+    });
+
 });

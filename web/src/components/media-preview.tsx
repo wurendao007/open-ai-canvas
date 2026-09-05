@@ -2,9 +2,6 @@ import { ImageOff } from "lucide-react";
 import { useState } from "react";
 
 import { cn } from "@/lib/utils";
-import { resourceIdFromFileUrl, resourceStorageKey } from "@/services/api/resources";
-import { CachedResourceImage } from "@/components/cached-resource-image";
-import { ResolvedResourceVideoSource } from "@/components/resolved-resource-video";
 
 const DEFAULT_UNAVAILABLE_LABEL = "预览不可用，素材可能已删除";
 
@@ -51,9 +48,8 @@ export function MediaPreview({
     }
 
     if (kind === "video") {
-        return <ResolvedResourceVideoSource src={src} width={width} height={height} muted={!controls} playsInline controls={controls} preload="metadata" className={className} onError={handleUnavailable} />;
+        return <video src={src} width={width} height={height} muted={!controls} playsInline controls={controls} preload="metadata" className={className} onError={handleUnavailable} />;
     }
 
-    const resourceId = resourceIdFromFileUrl(src);
-    return <CachedResourceImage storageKey={resourceId ? resourceStorageKey(resourceId) : undefined} src={src} alt={alt} width={width} height={height} loading={loading} className={className} onError={handleUnavailable} />;
+    return <img src={src} alt={alt} width={width} height={height} loading={loading} className={className} onError={handleUnavailable} />;
 }

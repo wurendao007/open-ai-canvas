@@ -12,7 +12,6 @@ import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-refer
 import type { Skill } from "@/services/api/skills";
 
 export type CanvasAgentChatAttachment = { id: string; name: string; url: string };
-export type CanvasAgentMode = "online" | "local";
 export type CanvasAgentChatMessage = {
     id: string;
     role: "user" | "assistant" | "system" | "tool" | "error";

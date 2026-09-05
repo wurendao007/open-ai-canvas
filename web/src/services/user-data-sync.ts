@@ -1,6 +1,7 @@
 import { getMediaBlob } from "@/services/file-storage";
 import { getImageBlob } from "@/services/image-storage";
-import { deleteRemoteAsset, deleteRemoteCanvasProject, getRemoteUserDataSnapshot, upsertRemoteAsset, upsertRemoteCanvasProjectWithVersion, type RemoteCanvasVersion } from "@/services/api/user-data";
+import { deleteRemoteAsset, deleteRemoteCanvasProject, getRemoteAsset, getRemoteAssetsByIds, getRemoteCanvasProject, getRemoteUserDataSnapshot, listRemoteAssetsPage, upsertRemoteAsset, upsertRemoteCanvasProject } from "@/services/api/user-data";
+import { appQueryClient } from "@/lib/query-client";
 import { resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
 import { assetForRemoteSync } from "@/lib/asset-remote-sync";
 import type { Asset } from "@/stores/use-asset-store";
@@ -10,7 +11,6 @@ import { flushCanvasStorePersistence, useCanvasStore } from "@/stores/canvas/use
 import { useSyncProgressStore } from "@/stores/use-sync-progress-store";
 import { useCanvasHistoryStore } from "@/stores/canvas/use-canvas-history-store";
 import { repairMissingCanvasAssets } from "@/services/canvas-asset-repair";
-import { ApiError } from "@/services/api/request";
 
 let activeRemoteUserId = "";
 type RemoteUserDataPhase = "inactive" | "hydrating" | "ready" | "failed";
@@ -23,23 +23,102 @@ let remoteOperationTail: Promise<void> = Promise.resolve();
 let subscriptionsInstalled = false;
 let acknowledgedAssets = new Map<string, Asset>();
 let acknowledgedProjects = new Map<string, CanvasProject>();
-let remoteCanvasVersions = new Map<string, RemoteCanvasVersion>();
-let remoteCanvasConflictKeys = new Set<string>();
+let incrementalSession = false;
+let sessionEpoch = 0;
+const verifiedProjects = new Set<string>();
+const verifiedAssets = new Set<string>();
 
-export function remoteCanvasVersionKey(scope: string, canvasId: string) {
-    return `${scope}\0${canvasId}`;
+export async function initializeRemoteUserDataSession(userId: string) {
+    await withRemoteUserDataSyncExclusive(async () => {
+        resetRemoteUserDataSync();
+        activeRemoteUserId = userId;
+        incrementalSession = true;
+        acknowledgedProjects = new Map(useCanvasStore.getState().projects.map((project) => [project.id, project]));
+        acknowledgedAssets = new Map(useAssetStore.getState().assets.map((asset) => [asset.id, asset]));
+        remoteUserDataPhase = "ready";
+    });
+}
+
+export async function loadCanvasProjectForEditing(id: string) {
+    const epoch = sessionEpoch;
+    return withRemoteUserDataSyncExclusive(async () => {
+        if (epoch !== sessionEpoch) throw new Error("账号已切换，请重新打开画布");
+        const local = useCanvasStore.getState().projects.find((project) => project.id === id);
+        if (!activeRemoteUserId || verifiedProjects.has(id)) return local;
+        const { project } = await getRemoteCanvasProject(id);
+        await loadReferencedAssets(collectAssetIds(project));
+        const current = useCanvasStore.getState().projects.find((candidate) => candidate.id === id);
+        if (current && !sameEntitySnapshot(acknowledgedProjects.get(id), current)) {
+            const baseline = acknowledgedProjects.get(id);
+            if (baseline && Date.parse(baseline.updatedAt) !== Date.parse(project.updatedAt)) throw new Error("画布已在其他端修改，请先导出本地修改再重新加载");
+            verifiedProjects.add(id);
+            return current;
+        }
+        acknowledgedProjects.set(id, project);
+        verifiedProjects.add(id);
+        useCanvasStore.setState((state) => ({ projects: [...state.projects.filter((candidate) => candidate.id !== id), project] }));
+        return project;
+    });
+}
+
+export async function loadAssetLibraryPage(options: Parameters<typeof listRemoteAssetsPage>[0]) {
+    const epoch = sessionEpoch;
+    const result = await listRemoteAssetsPage(options);
+    await withRemoteUserDataSyncExclusive(async () => {
+        if (epoch !== sessionEpoch) throw new Error("账号已切换，请重新读取素材");
+        acceptRemoteAssets(result.assets);
+    });
+    return result;
+}
+
+function acceptRemoteAssets(assets: Asset[]) {
+    const current = new Map(useAssetStore.getState().assets.map((asset) => [asset.id, asset]));
+    for (const asset of assets) {
+        const local = current.get(asset.id);
+        if (local && !sameEntitySnapshot(acknowledgedAssets.get(asset.id), local)) continue;
+        acknowledgedAssets.set(asset.id, asset);
+        verifiedAssets.add(asset.id);
+        current.set(asset.id, asset);
+    }
+    useAssetStore.setState({ assets: [...current.values()] });
+}
+
+function collectAssetIds(value: unknown, ids = new Set<string>()): Set<string> {
+    if (!value || typeof value !== "object") return ids;
+    for (const [key, child] of Object.entries(value)) {
+        if (key === "assetId" && typeof child === "string" && child) ids.add(child);
+        else if (child && typeof child === "object") collectAssetIds(child, ids);
+    }
+    return ids;
+}
+
+async function loadReferencedAssets(ids: Iterable<string>) {
+    const pending = [...new Set(ids)].filter((id) => !verifiedAssets.has(id));
+    for (let offset = 0; offset < pending.length; offset += 100) {
+        const { assets } = await getRemoteAssetsByIds(pending.slice(offset, offset + 100));
+        acceptRemoteAssets(assets);
+    }
+}
+
+export async function loadAssetsForUse(ids: Iterable<string>) {
+    const epoch = sessionEpoch;
+    const requestedIds = [...new Set(ids)];
+    await withRemoteUserDataSyncExclusive(async () => {
+        if (epoch !== sessionEpoch) throw new Error("账号已切换，请重新读取素材");
+        if (activeRemoteUserId) await loadReferencedAssets(requestedIds);
+        const available = new Set(useAssetStore.getState().assets.map((asset) => asset.id));
+        if (requestedIds.some((id) => !available.has(id) || (activeRemoteUserId && !verifiedAssets.has(id)))) throw new Error("部分素材不存在或无权访问，请重新选择素材");
+    });
 }
 
 const LOCAL_STORAGE_KEY_PATTERN = /^(image|video|audio|file|video-reference|audio-reference):/;
-export const REMOTE_CANVAS_CONFLICT_MESSAGE = "画布已被其他窗口或 MCP 修改，请重新加载/合并";
 
 export async function syncRemoteUserData(userId?: string | null) {
     let repairedCanvasAssets = false;
     await withRemoteUserDataSyncExclusive(async () => {
+        incrementalSession = false;
         activeRemoteUserId = userId || "";
         acknowledgedProjects.clear();
-        remoteCanvasVersions.clear();
-        remoteCanvasConflictKeys.clear();
         acknowledgedAssets.clear();
         if (!activeRemoteUserId) {
             remoteUserDataPhase = "inactive";
@@ -54,12 +133,10 @@ export async function syncRemoteUserData(userId?: string | null) {
             // 这里只替换结构化记录，不在登录阶段解析图片/视频/音频 URL；媒体由实际使用方按需解析。
             useCanvasStore.getState().replaceProjects(snapshot.projects);
             useAssetStore.getState().replaceAssets(snapshot.assets);
-            const acknowledgedProjectBaseline = new Map(useCanvasStore.getState().projects.map((project) => [project.id, project]));
             const repair = repairMissingCanvasAssets();
             repairedCanvasAssets = repair.createdAssets > 0 || repair.updatedProjects > 0;
             await Promise.all([flushCanvasStorePersistence(), flushAssetStorePersistence()]);
-            acknowledgedProjects = acknowledgedProjectBaseline;
-            remoteCanvasVersions = new Map((snapshot.projectVersions ?? []).filter((project) => project.stateHash != null).map((project) => [remoteCanvasVersionKey(activeRemoteUserId, project.id), { revision: project.revision ?? 0, stateHash: project.stateHash! }]));
+            acknowledgedProjects = new Map(snapshot.projects.map((project) => [project.id, project]));
             acknowledgedAssets = new Map(snapshot.assets.map((asset) => [asset.id, asset]));
             remoteUserDataPhase = "ready";
         } catch (error) {
@@ -82,12 +159,14 @@ export function installRemoteUserDataAutoSync() {
 }
 
 export function resetRemoteUserDataSync() {
+    sessionEpoch += 1;
+    incrementalSession = false;
+    verifiedProjects.clear();
+    verifiedAssets.clear();
     activeRemoteUserId = "";
     remoteUserDataPhase = "inactive";
     acknowledgedAssets.clear();
     acknowledgedProjects.clear();
-    remoteCanvasVersions.clear();
-    remoteCanvasConflictKeys.clear();
     if (syncTimer) {
         window.clearTimeout(syncTimer);
         syncTimer = null;
@@ -118,13 +197,7 @@ export function scheduleRemoteUserDataSync() {
     if (syncTimer) window.clearTimeout(syncTimer);
     syncTimer = window.setTimeout(() => {
         syncTimer = null;
-        void saveRemoteUserDataNow().catch((error) => {
-            if (error instanceof ApiError && error.status === 409) {
-                console.warn(REMOTE_CANVAS_CONFLICT_MESSAGE);
-                return;
-            }
-            console.warn("云端自动同步失败", error);
-        });
+        void saveRemoteUserDataNow().catch((error) => console.warn("云端自动同步失败", error));
     }, 1200);
 }
 
@@ -142,9 +215,11 @@ export async function createCanvasProjectWithRemoteSync(title: string, projectId
 }
 
 export async function deleteAssetWithRemoteSync(id: string) {
+    const epoch = sessionEpoch;
     const assetId = id.trim();
     if (!assetId) throw new Error("素材 ID 不能为空");
     await withRemoteUserDataSyncExclusive(async () => {
+        if (epoch !== sessionEpoch) throw new Error("账号已切换，请重新选择要删除的素材");
         if (activeRemoteUserId) {
             requireRemoteUserDataBaseline();
             await deleteRemoteAsset(assetId);
@@ -156,9 +231,14 @@ export async function deleteAssetWithRemoteSync(id: string) {
 }
 
 export async function deleteCanvasProjectsWithRemoteSync(ids: string[]) {
+    const epoch = sessionEpoch;
     const projectIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
     if (!projectIds.length) return;
+    if (incrementalSession) {
+        for (const id of projectIds) await loadCanvasProjectForEditing(id);
+    }
     await withRemoteUserDataSyncExclusive(async () => {
+        if (epoch !== sessionEpoch) throw new Error("账号已切换，请重新选择要删除的画布");
         if (activeRemoteUserId) requireRemoteUserDataBaseline();
         const currentProjects = useCanvasStore.getState().projects;
         const projectById = new Map(currentProjects.map((project) => [project.id, project]));
@@ -170,7 +250,6 @@ export async function deleteCanvasProjectsWithRemoteSync(ids: string[]) {
                 if (activeRemoteUserId) {
                     await deleteRemoteCanvasProject(id);
                     acknowledgedProjects.delete(id);
-                    remoteCanvasVersions.delete(remoteCanvasVersionKey(activeRemoteUserId, id));
                 }
                 useCanvasStore.getState().deleteProjects([id]);
                 // 批量删除允许部分成功；每个已成功远端删除的实体都立即落实到本地 durable cache。
@@ -184,6 +263,12 @@ export async function deleteCanvasProjectsWithRemoteSync(ids: string[]) {
             }
         }
         if (deletedProjectObjects.length > 0) useCanvasHistoryStore.getState().recordDeletedProjects(deletedProjectObjects);
+
+        if (incrementalSession) {
+            void appQueryClient.invalidateQueries({ queryKey: ["canvas-library"] });
+            if (deletionError) throw deletionError;
+            return;
+        }
 
         // 将属于被删除画布的所有媒体节点安全归档至素材库回收站 (status = "archived")
         const currentAssets = useAssetStore.getState().assets;
@@ -317,6 +402,7 @@ export async function deleteCanvasProjectsWithRemoteSync(ids: string[]) {
 }
 
 export async function saveRemoteUserDataNow() {
+    const epoch = sessionEpoch;
     if (!activeRemoteUserId) return;
     requireRemoteUserDataBaseline();
     if (syncPromise) {
@@ -324,6 +410,7 @@ export async function saveRemoteUserDataNow() {
         return syncPromise;
     }
     syncPromise = withRemoteUserDataSyncExclusive(async () => {
+        if (epoch !== sessionEpoch) throw new Error("账号已切换，已停止旧会话保存");
         requireRemoteUserDataBaseline();
         await drainRemoteUserDataChanges();
     });
@@ -345,16 +432,30 @@ async function drainRemoteUserDataChanges() {
 async function saveRemoteUserDataBatch(uploaded: Map<string, string>) {
     // 中央兜底：任何调用方只要把持久媒体写进画布，提交前都会先补齐素材记录与 assetId。
     // 页面级入口仍主动入库，以便立即反馈；这里负责阻止遗漏入口形成远端幽灵资源。
-    repairMissingCanvasAssets();
+    const changedProjectIds = new Set(useCanvasStore.getState().projects.filter((project) => !sameEntitySnapshot(acknowledgedProjects.get(project.id), project)).map((project) => project.id));
+    repairMissingCanvasAssets(incrementalSession ? changedProjectIds : undefined, incrementalSession);
     const currentProjects = useCanvasStore.getState().projects;
     const currentAssets = useAssetStore.getState().assets;
-    const dirtyProjects = currentProjects.filter((project) => !remoteCanvasConflictKeys.has(remoteCanvasVersionKey(activeRemoteUserId, project.id)) && !sameEntitySnapshot(acknowledgedProjects.get(project.id), project));
+    const dirtyProjects = currentProjects.filter((project) => !sameEntitySnapshot(acknowledgedProjects.get(project.id), project));
     const dirtyAssets = currentAssets.filter((asset) => !sameEntitySnapshot(acknowledgedAssets.get(asset.id), asset));
-    const currentProjectIds = new Set(currentProjects.map((project) => project.id));
-    const currentAssetIds = new Set(currentAssets.map((asset) => asset.id));
-    const deletedProjectIds = [...acknowledgedProjects.keys()].filter((id) => !currentProjectIds.has(id));
-    const deletedAssetIds = [...acknowledgedAssets.keys()].filter((id) => !currentAssetIds.has(id));
-    if (!dirtyProjects.length && !dirtyAssets.length && !deletedProjectIds.length && !deletedAssetIds.length) return;
+    if (!dirtyProjects.length && !dirtyAssets.length) return;
+
+    if (incrementalSession) {
+        for (const source of dirtyProjects) {
+            const baseline = acknowledgedProjects.get(source.id);
+            if (!baseline || verifiedProjects.has(source.id)) continue;
+            const { project } = await getRemoteCanvasProject(source.id);
+            if (Date.parse(project.updatedAt) !== Date.parse(baseline.updatedAt)) throw new Error("画布远端版本已变化，已停止覆盖，请重新打开画布");
+            verifiedProjects.add(source.id);
+        }
+        for (const source of dirtyAssets) {
+            const baseline = acknowledgedAssets.get(source.id);
+            if (!baseline || verifiedAssets.has(source.id)) continue;
+            const { asset } = await getRemoteAsset(source.id);
+            if (Date.parse(asset.updatedAt) !== Date.parse(baseline.updatedAt)) throw new Error("素材远端版本已变化，已停止覆盖，请重新打开素材库");
+            verifiedAssets.add(source.id);
+        }
+    }
 
     // 转换后的 resource: 引用只属于发往服务端的 payload，不能反写整份实时 store。
     // 已确认快照记录的是本次上传所依据的本地实体；上传期间的新编辑会在下一轮继续提交。
@@ -364,6 +465,7 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>) {
         const remotePayload = await ensureRemoteResourceReferences(assetForRemoteSync(source), uploaded);
         await upsertRemoteAsset(remotePayload);
         acknowledgedAssets.set(source.id, source);
+        verifiedAssets.add(source.id);
     }
     for (const source of dirtyProjects) {
         const keysToUpload = collectLocalMediaKeys(source);
@@ -390,24 +492,12 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>) {
                     message: "正在保存画布结构",
                 });
             }
-            const versionKey = remoteCanvasVersionKey(activeRemoteUserId, source.id);
-            const response = await upsertRemoteCanvasProjectWithVersion(remotePayload, remoteCanvasVersions.get(versionKey));
-            if (typeof response.project.revision === "number" && typeof response.project.stateHash === "string") {
-                remoteCanvasVersions.set(versionKey, { revision: response.project.revision, stateHash: response.project.stateHash });
-            }
-            remoteCanvasConflictKeys.delete(versionKey);
+            await upsertRemoteCanvasProject(sanitizeCanvasProjectForRemoteSync(remotePayload));
             acknowledgedProjects.set(source.id, source);
+            verifiedProjects.add(source.id);
             if (total > 0) useSyncProgressStore.getState().setProjectProgress(source.id, null);
         } catch (error) {
-            if (error instanceof ApiError && error.status === 409) {
-                remoteCanvasConflictKeys.add(remoteCanvasVersionKey(activeRemoteUserId, source.id));
-                useSyncProgressStore.getState().setProjectProgress(source.id, {
-                    phase: "error",
-                    total,
-                    completed: 0,
-                    message: REMOTE_CANVAS_CONFLICT_MESSAGE,
-                });
-            } else if (total > 0) {
+            if (total > 0) {
                 useSyncProgressStore.getState().setProjectProgress(source.id, {
                     phase: "error",
                     message: error instanceof Error ? error.message : "云端同步失败，等待重试",
@@ -416,16 +506,7 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>) {
             throw error;
         }
     }
-    for (const id of deletedProjectIds) {
-        await deleteRemoteCanvasProject(id);
-        acknowledgedProjects.delete(id);
-        remoteCanvasVersions.delete(remoteCanvasVersionKey(activeRemoteUserId, id));
-        remoteCanvasConflictKeys.delete(remoteCanvasVersionKey(activeRemoteUserId, id));
-    }
-    for (const id of deletedAssetIds) {
-        await deleteRemoteAsset(id);
-        acknowledgedAssets.delete(id);
-    }
+    if (dirtyProjects.length) void appQueryClient.invalidateQueries({ queryKey: ["canvas-library"] });
 }
 
 function collectLocalMediaKeys(value: unknown, set = new Set<string>()): string[] {
@@ -548,4 +629,43 @@ function isLocalStorageKey(value: string) {
 function numberValue(value: unknown) {
     const number = Number(value);
     return Number.isFinite(number) && number > 0 ? number : undefined;
+}
+
+function sanitizeCanvasProjectForRemoteSync<T>(project: T): T {
+    if (!project || typeof project !== "object") return project;
+    const clone = { ...(project as Record<string, unknown>) };
+    if (Array.isArray(clone.chatSessions)) {
+        clone.chatSessions = clone.chatSessions.map((session) => {
+            if (!session || typeof session !== "object") return session;
+            const s = { ...(session as Record<string, unknown>) };
+            if (Array.isArray(s.messages)) {
+                s.messages = s.messages.map((message) => {
+                    if (!message || typeof message !== "object" || !message.detail) return message;
+                    const m = { ...(message as Record<string, unknown>) };
+                    if (m.detail && typeof m.detail === "object") {
+                        const d = { ...(m.detail as Record<string, unknown>) };
+                        if (Array.isArray(d.results)) {
+                            d.results = d.results.map((r) => {
+                                if (!r || typeof r !== "object") return r;
+                                const res = { ...(r as Record<string, unknown>) };
+                                if (res.result && typeof res.result === "object") {
+                                    const inner = { ...(res.result as Record<string, unknown>) };
+                                    if (inner.data && typeof inner.data === "object") {
+                                        const { snapshot: _s, before: _b, after: _a, ...restData } = inner.data as Record<string, unknown>;
+                                        inner.data = restData;
+                                    }
+                                    res.result = inner;
+                                }
+                                return res;
+                            });
+                        }
+                        m.detail = d;
+                    }
+                    return m;
+                });
+            }
+            return s;
+        });
+    }
+    return clone as T;
 }

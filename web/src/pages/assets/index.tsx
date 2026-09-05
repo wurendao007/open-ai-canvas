@@ -29,7 +29,8 @@ import { useUserStore } from "@/stores/use-user-store";
 import { createAssetFolder, deleteAssetFolder, listAssetFolders, listRemoteAssetsPage, moveRemoteAssetsToFolder, updateAssetFolder, type AssetFolder } from "@/services/api/user-data";
 import { AssetBatchUploadModal } from "./asset-batch-upload-modal";
 import { useAppearanceStore } from "@/stores/use-appearance-store";
-import { resourceDownloadUrl, resourceDownloadUrlFromUrl, resourceIdFromStorageKey } from "@/services/api/resources";
+import { resourceDownloadUrl, resourceDownloadUrlFromUrl, resourceIdFromStorageKey, startResourceDownload } from "@/services/api/resources";
+import { buildAssetDownloadFileName } from "@/lib/asset-download";
 
 type LibraryAsset = Exclude<Asset, { kind: "entity" }>;
 
@@ -388,7 +389,7 @@ export default function AssetsPage() {
         const sourceUrl = asset.kind === "image" ? asset.data.dataUrl : asset.data.url;
         const url = resourceId ? resourceDownloadUrl(resourceId) : resourceDownloadUrlFromUrl(sourceUrl);
         const extension = asset.kind === "model" ? asset.data.fileName.split(".").pop() || "glb" : asset.data.mimeType.split("/")[1] || "png";
-        saveAs(url, `${asset.title || "asset"}.${extension}`);
+        startResourceDownload(url, buildAssetDownloadFileName(asset.kind === "model" ? asset.data.fileName : asset.title, extension)).catch((error) => message.error(error instanceof Error ? `下载失败：${error.message}` : "下载失败"));
     };
 
     const exportAllAssets = async () => {
@@ -793,6 +794,7 @@ export default function AssetsPage() {
                 confirmLoading={imageUploading}
                 cancelButtonProps={{ disabled: imageUploading }}
                 closable={!imageUploading}
+                forceRender
                 destroyOnHidden
             >
                 <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">

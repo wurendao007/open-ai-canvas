@@ -1,5 +1,5 @@
 import { App, Button, Drawer, Form, Input, Modal, Select, Switch, Tooltip, Typography } from "antd";
-import { Bug, LayoutGrid, List, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
+import { Bug, LayoutGrid, List, Plus, RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
@@ -10,7 +10,7 @@ import { CONTENT_MODERATION_ERROR_CODE, generationErrorMessage, isContentModerat
 import { formatTaskKind, isGenerationTaskSubmissionUncertain, operationOptions, statusLabel } from "@/lib/generation-task-display";
 import { backendProviderConfig, logicalModelIDForConfig } from "@/services/api/generation-task";
 
-import { createAgentSession, createGenerationTask, deleteGenerationTask, formatTaskLog, listGenerationTasks, listTaskLogs, queryFailedVideoProviderTask, queryGenerationTask, refreshGenerationTaskStatus, retryGenerationTask, type CreateTaskInput, type GenerationTask, type TaskLog } from "@/services/api/task-center";
+import { createAgentSession, createGenerationTask, formatTaskLog, listGenerationTasks, listTaskLogs, queryFailedVideoProviderTask, queryGenerationTask, refreshGenerationTaskStatus, retryGenerationTask, type CreateTaskInput, type GenerationTask, type TaskLog } from "@/services/api/task-center";
 import { syncGenerationTaskToCanvasStore } from "@/lib/canvas/canvas-generation-task-sync";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { resolveModelRequestConfig, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
@@ -309,33 +309,6 @@ export default function TasksPage() {
         }
     };
 
-    const deleteLocalTask = (task: GenerationTask) => {
-        if (task.status === "queued" || task.status === "running") {
-            message.warning("任务正在执行，不能删除本机记录；请等待任务完成");
-            return;
-        }
-        Modal.confirm({
-            title: "删除本机任务记录？",
-            content: "这只会删除本机任务记录，不会删除已生成的素材。",
-            okText: "删除本机记录",
-            okButtonProps: { danger: true },
-            cancelText: "保留",
-            onOk: async () => {
-                setActingId(task.id);
-                try {
-                    await deleteGenerationTask(task.id);
-                    setTasks((items) => items.filter((item) => item.id !== task.id));
-                    if (detailTask?.id === task.id) setDetailTask(null);
-                    message.success("本机任务记录已删除");
-                } catch (error) {
-                    message.error(error instanceof Error ? error.message : "删除失败");
-                } finally {
-                    setActingId("");
-                }
-            },
-        });
-    };
-
     const refreshLocalTaskStatus = async (task: GenerationTask) => {
         setActingId(task.id);
         try {
@@ -493,7 +466,7 @@ export default function TasksPage() {
                     {!groupingActive ? <PaginationBar current={page} pageSize={pageSize} total={filteredTasks.length} pageSizeOptions={[20, 50, 100]} onChange={(nextPage, nextPageSize) => { setPage(nextPageSize !== pageSize ? 1 : nextPage); setPageSize(nextPageSize); }} /> : null}
                 </div>
             </WorkspacePage>
-            <Modal className="library-modal" title="新建异步生成任务" open={createOpen} onCancel={() => setCreateOpen(false)} onOk={submitTask} confirmLoading={creating} okText="创建任务">
+            <Modal className="library-modal" title="新建异步生成任务" open={createOpen} forceRender onCancel={() => setCreateOpen(false)} onOk={submitTask} confirmLoading={creating} okText="创建任务">
                 <Form form={form} layout="vertical" initialValues={{ operation: "agent_session" }}>
                     <Form.Item name="operation" label="任务类型" rules={[{ required: true, message: "请选择任务类型" }]}>
                         <Select options={operationOptions} />
@@ -530,11 +503,6 @@ export default function TasksPage() {
                             {detailTask.provider === "dreamina-cli" && detailTask.receiptRecorded && detailTask.status === "running" ? (
                                 <Button aria-label="更新官方状态" icon={<RefreshCw className="size-4" />} loading={actingId === detailTask.id} onClick={() => void refreshLocalTaskStatus(detailTask)}>
                                     更新官方状态
-                                </Button>
-                            ) : null}
-                            {detailTask.provider === "dreamina-cli" ? (
-                                <Button danger aria-label="删除本机记录" icon={<Trash2 className="size-4" />} loading={actingId === detailTask.id} onClick={() => deleteLocalTask(detailTask)}>
-                                    删除本机记录
                                 </Button>
                             ) : null}
                             {canQueryProviderTask(detailTask) ? <Button icon={<RefreshCw className="size-4" />} loading={actingId === detailTask.id} onClick={() => void queryProviderTask(detailTask)}>手动查询任务</Button> : null}

@@ -92,6 +92,7 @@ func run(ctx context.Context) error {
 	if err := svc.EnsureSkillPackages(); err != nil {
 		return err
 	}
+	go svc.BackfillPlaybackTranscodes()
 	if summary, err := svc.MigrateLegacyStorage(); err != nil {
 		log.Printf("storage migration skipped after error: %v", err)
 	} else if summary.Backup != "" {
@@ -139,6 +140,7 @@ func run(ctx context.Context) error {
 	handler.RegisterSessionRoutes(api, svc)
 	handler.RegisterSkillRoutes(api, svc)
 	handler.RegisterUserDataRoutes(api, svc)
+	handler.RegisterChunkedUploadRoutes(api, svc)
 	handler.RegisterDiagnosticsRoutes(api, svc)
 	handler.RegisterPluginRoutes(api, svc)
 	projectAPI := api.Group("")

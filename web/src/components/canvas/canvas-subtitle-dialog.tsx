@@ -7,7 +7,8 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import { resolveMediaUrl } from "@/services/file-storage";
-import { resourceFallbackUrl, resourceIdFromFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
+import { cacheResourceObjectUrl } from "@/services/resource-blob-cache";
+import { resourceIdFromStorageKey } from "@/services/api/resources";
 import { parseSrt, serializeSrtEntries } from "@/lib/timeline/srt-parser";
 import { DEFAULT_MAX_CHARS_PER_ENTRY, MAX_CHARS_PER_ENTRY_LIMIT, MIN_CHARS_PER_ENTRY, resegmentSrtEntries, splitLongEntry } from "@/lib/timeline/srt-resegment";
 import { buildFallbackHighlights, remapHighlightsAfterResegment } from "@/lib/timeline/subtitle-highlights";
@@ -60,7 +61,7 @@ export function CanvasSubtitleDialog({ node, open, projectId, config, onClose, o
     }, []);
 
     // 打开弹窗时解析视频地址，用于字幕叠加预览。
-    // 视频正文保持 Range 流式播放，不在弹窗打开时整段下载到 IndexedDB。
+    // 远端资源优先走节点同款缓存下载（对象 URL），失败再退回资源代理地址。
     useEffect(() => {
         if (!open) return;
         let cancelled = false;
@@ -69,16 +70,25 @@ export function CanvasSubtitleDialog({ node, open, projectId, config, onClose, o
         setVideoError(false);
         const storageKey = node.metadata?.storageKey || "";
         const fallback = node.metadata?.content || "";
-        const resourceId = resourceIdFromStorageKey(storageKey) || resourceIdFromFileUrl(fallback);
-        const safeFallback = resourceId ? resourceFallbackUrl(resourceId, fallback) : fallback;
         const applyUrl = (url: string) => {
             if (!cancelled) setVideoUrl(url);
         };
-        void resolveMediaUrl(storageKey, safeFallback)
-            .then(applyUrl)
-            .catch(() => {
-                if (!cancelled) setVideoError(true);
-            });
+        if (resourceIdFromStorageKey(storageKey)) {
+            void cacheResourceObjectUrl(storageKey)
+                .then((cached) => {
+                    if (cancelled) return;
+                    if (cached) {
+                        setVideoUrl(cached);
+                    } else {
+                        void resolveMediaUrl(storageKey, fallback).then(applyUrl);
+                    }
+                })
+                .catch(() => {
+                    if (!cancelled) void resolveMediaUrl(storageKey, fallback).then(applyUrl);
+                });
+        } else {
+            void resolveMediaUrl(storageKey, fallback).then(applyUrl);
+        }
         return () => {
             cancelled = true;
         };

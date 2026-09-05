@@ -3,8 +3,6 @@ import { AudioLines, BadgeCheck, Image as ImageIcon, UserRound, Volume2 } from "
 import type { ReactNode } from "react";
 
 import type { CanvasNodeData } from "@/types/canvas";
-import { CachedResourceImage } from "@/components/cached-resource-image";
-import { resourceIdFromFileUrl, resourceStorageKey } from "@/services/api/resources";
 
 export function CanvasCharacterReferenceModal({ node, open, onClose }: { node: CanvasNodeData | null; open: boolean; onClose: () => void }) {
     if (!node) return null;
@@ -37,7 +35,12 @@ export function CanvasCharacterReferenceModal({ node, open, onClose }: { node: C
                     </div>
                     {metadata?.characterCoverUrl ? (
                         <div className="flex h-full w-full items-center justify-center p-5 pt-16 md:p-8 md:pt-20">
-                            {(() => { const resourceId = resourceIdFromFileUrl(metadata.characterCoverUrl); return resourceId ? <CachedResourceImage storageKey={resourceStorageKey(resourceId)} src={metadata.characterCoverUrl} alt={`${name}人物三视图`} className="max-h-full max-w-full select-none object-contain drop-shadow-[0_22px_42px_rgba(0,0,0,.14)]" eager draggable={false} /> : <img src={metadata.characterCoverUrl} alt={`${name}人物三视图`} className="max-h-full max-w-full select-none object-contain drop-shadow-[0_22px_42px_rgba(0,0,0,.14)]" draggable={false} />; })()}
+                            <img
+                                src={metadata.characterCoverUrl}
+                                alt={`${name}人物三视图`}
+                                className="max-h-full max-w-full select-none object-contain drop-shadow-[0_22px_42px_rgba(0,0,0,.14)]"
+                                draggable={false}
+                            />
                         </div>
                     ) : (
                         <div className="grid h-full place-items-center px-8 text-center text-foreground/35">

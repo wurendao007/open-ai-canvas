@@ -133,6 +133,129 @@ func TestMigrateSchemaV4AddsResourceUploadKeyToExistingSchema(t *testing.T) {
 	}
 }
 
+func TestMigrateSchemaV7AddsOnlineMCPToExistingSchema(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-online-mcp?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`CREATE TABLE canvas_projects (
+		id TEXT PRIMARY KEY,
+		user_id TEXT,
+		project_id TEXT,
+		title TEXT,
+		payload_json TEXT,
+		created_at DATETIME,
+		updated_at DATETIME
+	)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	payload := `{"title":"旧画布","nodes":[],"connections":[]}`
+	if err := db.Exec("INSERT INTO canvas_projects (id, user_id, title, payload_json) VALUES (?, ?, ?, ?)", "canvas-v6", "user-v6", "旧画布", payload).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&schemaMigration{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range schemaMigrations {
+		if item.version > 6 {
+			break
+		}
+		if err := db.Create(&schemaMigration{Version: item.version, Name: item.name, Checksum: item.checksum, AppliedAt: time.Now().UTC()}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := MigrateSchema(db); err != nil {
+		t.Fatalf("migrate v6 database: %v", err)
+	}
+	if !db.Migrator().HasColumn(&model.CanvasProject{}, "revision") || !db.Migrator().HasColumn(&model.CanvasProject{}, "state_hash") {
+		t.Fatal("online MCP migration did not add canvas revision columns")
+	}
+	for _, table := range []any{&model.MCPDeviceSession{}, &model.MCPToken{}, &model.MCPAuditEvent{}} {
+		if !db.Migrator().HasTable(table) {
+			t.Fatalf("online MCP migration did not create %T", table)
+		}
+	}
+	wantHash, err := model.CanvasStateHash([]byte(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var project model.CanvasProject
+	if err := db.First(&project, "id = ?", "canvas-v6").Error; err != nil {
+		t.Fatal(err)
+	}
+	if project.Revision != 0 || project.StateHash != wantHash {
+		t.Fatalf("legacy canvas version = %d/%q, want 0/%q", project.Revision, project.StateHash, wantHash)
+	}
+}
+
+func TestMigrateSchemaV7KeepsInvalidLegacyCanvasSnapshots(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-online-mcp-invalid?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`CREATE TABLE canvas_projects (
+		id TEXT PRIMARY KEY,
+		user_id TEXT,
+		project_id TEXT,
+		title TEXT,
+		payload_json TEXT,
+		created_at DATETIME,
+		updated_at DATETIME
+	)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	rows := []struct {
+		id      string
+		payload string
+	}{
+		{id: "canvas-valid", payload: `{"title":"有效画布","nodes":[]}`},
+		{id: "canvas-malformed", payload: `{malformed`},
+		{id: "canvas-array", payload: `[]`},
+		{id: "canvas-inline-media", payload: `{"image":"data:image/png;base64,AAAA"}`},
+	}
+	for _, row := range rows {
+		if err := db.Exec("INSERT INTO canvas_projects (id, user_id, title, payload_json) VALUES (?, ?, ?, ?)", row.id, "user-invalid", row.id, row.payload).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.AutoMigrate(&schemaMigration{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range schemaMigrations {
+		if item.version > 6 {
+			break
+		}
+		if err := db.Create(&schemaMigration{Version: item.version, Name: item.name, Checksum: item.checksum, AppliedAt: time.Now().UTC()}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := MigrateSchema(db); err != nil {
+		t.Fatalf("migration should keep malformed legacy snapshots available: %v", err)
+	}
+	validHash, err := model.CanvasStateHash([]byte(rows[0].payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var valid model.CanvasProject
+	if err := db.First(&valid, "id = ?", "canvas-valid").Error; err != nil {
+		t.Fatal(err)
+	}
+	if valid.StateHash != validHash {
+		t.Fatalf("valid canvas state hash = %q, want %q", valid.StateHash, validHash)
+	}
+	for _, id := range []string{"canvas-malformed", "canvas-array", "canvas-inline-media"} {
+		var project model.CanvasProject
+		if err := db.First(&project, "id = ?", id).Error; err != nil {
+			t.Fatal(err)
+		}
+		if project.StateHash != "" || project.PayloadJSON == "" {
+			t.Fatalf("invalid canvas %s was rewritten: hash=%q payload=%q", id, project.StateHash, project.PayloadJSON)
+		}
+	}
+}
+
 func TestMigrateSchemaRollsBackFailedMigration(t *testing.T) {
 	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-rollback?mode=memory&cache=shared"})
 	if err != nil {

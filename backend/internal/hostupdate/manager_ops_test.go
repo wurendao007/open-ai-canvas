@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -45,7 +46,9 @@ func TestSetEnvValuePreservesOtherSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stat.Mode().Perm() != 0o640 {
+	// Windows 不实现 POSIX 权限位，0o640 会被读回成 0666；Host Updater 本身也只在
+	// Linux 上运行（见 manager_ops.go 的平台校验），所以只在类 Unix 平台断言权限保留。
+	if runtime.GOOS != "windows" && stat.Mode().Perm() != 0o640 {
 		t.Fatalf("mode=%o, want 640", stat.Mode().Perm())
 	}
 }
