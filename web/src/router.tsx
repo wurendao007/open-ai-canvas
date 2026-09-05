@@ -3,7 +3,7 @@ import { createBrowserRouter, Navigate, Outlet } from "react-router";
 
 import { RequireAuth } from "@/components/auth/require-auth";
 import { RequireFeature } from "@/components/auth/require-feature";
-import { FullScreenLoader, WorkspaceRouteLoader } from "@/components/ui/aceternity/full-screen-loader";
+import { FullScreenLoader } from "@/components/ui/aceternity/full-screen-loader";
 import { loadAssetsPage, loadCanvasPage, loadCanvasProjectPage, loadCreatePage, loadProjectsPage, loadWalletPage } from "@/lib/workspace-route-modules";
 import UserLayout from "@/layouts/user-layout";
 import { AuthScene } from "@/pages/auth/auth-scene";
@@ -55,7 +55,10 @@ const SettingsPage = lazy(() => import("@/pages/settings"));
 const TestVoiceRecording = lazy(() => import("@/pages/test-voice-recording"));
 
 function deferred(element: ReactNode) {
-    return <Suspense fallback={<WorkspaceRouteLoader />}>{element}</Suspense>;
+    // Session hydration already owns the single full-screen loading state.
+    // Keeping a second route mask here causes a visible flash during fast
+    // lazy-route resolution, especially in older Chromium-based browsers.
+    return <Suspense fallback={null}>{element}</Suspense>;
 }
 
 function fullScreenDeferred(element: ReactNode) {
