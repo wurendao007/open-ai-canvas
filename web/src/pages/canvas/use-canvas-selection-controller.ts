@@ -99,6 +99,7 @@ export function useCanvasSelectionController({
     const [dragPreview, setDragPreview] = useState<{ x: number; y: number; nodeIds: Set<string> } | null>(null);
     const dragPreviewRef = useRef<CanvasNodeDragPreview | null>(null);
     const dragPreviewClearPendingRef = useRef(false);
+    const dragPreviewContainerRef = useRef<HTMLDivElement | null>(null);
     const [alignmentGuides, setAlignmentGuides] = useState<{ vertical?: number; horizontal?: number }>({});
 
     // React may repaint for alignment/drop-target state while a drag is active.
@@ -108,13 +109,13 @@ export function useCanvasSelectionController({
         if (dragPreviewClearPendingRef.current) {
             dragPreviewClearPendingRef.current = false;
             dragPreviewRef.current = null;
-            applyCanvasNodeDragPreview(containerRef.current, null);
+            applyCanvasNodeDragPreview(containerRef.current || dragPreviewContainerRef.current, null);
             setDragPreview(null);
             setIsNodeDragging(false);
             return;
         }
         const preview = dragPreviewRef.current;
-        if (preview) applyCanvasNodeDragPreview(containerRef.current, preview);
+        if (preview) applyCanvasNodeDragPreview(containerRef.current || dragPreviewContainerRef.current, preview);
     });
 
     const resetSelectionBox = useCallback(() => {
@@ -233,6 +234,7 @@ export function useCanvasSelectionController({
         setAlignmentGuides({});
         applyCanvasAlignmentGuidesPreview(containerRef.current, {});
         const preview = { x: 0, y: 0, nodeIds: draggedRenderNodeIdSet };
+        dragPreviewContainerRef.current = containerRef.current;
         dragPreviewRef.current = preview;
         setDragPreview(preview);
         applyCanvasNodeDragPreview(containerRef.current, preview);
@@ -275,7 +277,7 @@ export function useCanvasSelectionController({
         // React commits the final node coordinates asynchronously. Defer
         // clearing the compositor preview to the next layout effect so the
         // old translate cannot combine with the newly committed transform.
-        if (containerRef.current) {
+        if (containerRef.current || dragPreviewContainerRef.current) {
             dragPreviewClearPendingRef.current = true;
         } else {
             dragPreviewRef.current = null;
@@ -409,10 +411,6 @@ export function useCanvasSelectionController({
         return () => {
             if (dragFrameRef.current) cancelAnimationFrame(dragFrameRef.current);
             if (selectionFrameRef.current) cancelAnimationFrame(selectionFrameRef.current);
-            dragPreviewClearPendingRef.current = false;
-            dragPreviewRef.current = null;
-            applyCanvasNodeDragPreview(containerRef.current, null);
-            applyCanvasAlignmentGuidesPreview(containerRef.current, {});
             window.removeEventListener("mousemove", handleNodeDragMove);
             window.removeEventListener("mouseup", handleMouseUp);
             window.removeEventListener("pointermove", handlePointerMove);
@@ -421,6 +419,18 @@ export function useCanvasSelectionController({
             window.removeEventListener("blur", cancel);
         };
     }, [cancelSelectionBox, finishNodeDrag, finishSelection, handleNodeDragMove, handlePointerMove]);
+
+    // The listener effect can be recreated when a caller supplies a new
+    // callback identity. Do not tear down an active drag in that dependency
+    // cleanup; only clear DOM previews when this controller is unmounted.
+    useEffect(() => () => {
+        dragPreviewClearPendingRef.current = false;
+        dragPreviewRef.current = null;
+        const container = containerRef.current || dragPreviewContainerRef.current;
+        applyCanvasNodeDragPreview(container, null);
+        applyCanvasAlignmentGuidesPreview(container, {});
+        dragPreviewContainerRef.current = null;
+    }, [containerRef]);
 
     return {
         alignmentGuides,
