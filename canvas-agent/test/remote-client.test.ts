@@ -41,3 +41,7 @@ test("RemoteMcpClient maps non-success envelopes to structured errors", async ()
         await assert.rejects(() => client.request("/mcp/projects/p"), (error: unknown) => error instanceof RemoteMcpError && error.status === 409 && error.data?.revision === 2);
     } finally { globalThis.fetch = original; }
 });
+
+test("RemoteMcpClient rejects plaintext server URLs", () => {
+    assert.throws(() => new RemoteMcpClient({ serverUrl: "http://canvas.example", accessToken: "access", refreshToken: "refresh" }), /HTTPS/);
+});

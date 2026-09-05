@@ -35,3 +35,25 @@ test("direct generation planning reuses identity for the same logical request", 
     assert.equal(first.tool, "generate");
     assert.equal((first.input as { clientOperationId: string }).clientOperationId, (second.input as { clientOperationId: string }).clientOperationId);
 });
+
+test("workflow planning preserves references, per-node run flags, dimensions, and gap", () => {
+    const planned = planTool("canvas_create_workflow", {
+        title: "角色工作流",
+        gap: 180,
+        nodes: [
+            { ref: "cards", kind: "character_cards", title: "角色卡", runGeneration: true, width: 700, height: 400 },
+            { ref: "shot", kind: "storyboard_video", title: "分镜视频", referenceRefs: ["cards"], referenceNodeIds: ["existing"], prompt: "镜头提示" },
+        ],
+    }, { nodes: [{ id: "existing", type: "image", position: { x: 0, y: 0 }, width: 100, height: 100 }], connections: [], revision: 3 });
+    const ops = planned.input.ops as Array<Record<string, unknown>>;
+    const cards = ops.find((op) => op.type === "add_node" && op.id?.toString().includes("cards"));
+    const shot = ops.find((op) => op.type === "add_node" && op.id?.toString().includes("shot"));
+    assert.deepEqual((cards?.metadata as Record<string, unknown>).referenceNodeIds, undefined);
+    assert.deepEqual((shot?.metadata as Record<string, unknown>).referenceNodeIds, [cards?.id, "existing"]);
+    assert.equal(cards?.width, 700);
+    assert.equal(cards?.height, 400);
+    assert.equal(ops.filter((op) => op.type === "run_generation").length, 1);
+    assert.equal(typeof ops.find((op) => op.type === "run_generation")?.id, "string");
+    const shotPosition = shot?.position as { x: number; y: number };
+    assert.equal(shotPosition.x - ((cards?.position as { x: number }).x + 700), 180);
+});
