@@ -1,4 +1,4 @@
-import { loadRemoteConfig, loadProjectSelection, saveRemoteConfig, type ProjectSelection, type RemoteCredentials } from "./remote-config.js";
+import { loadRemoteConfig, loadProjectSelection, normalizeServerUrl, saveRemoteConfig, type ProjectSelection, type RemoteCredentials } from "./remote-config.js";
 
 export type RemoteEnvelope<T> = { code: number; data: T; msg: string };
 export class RemoteMcpError extends Error {
@@ -10,7 +10,7 @@ export class RemoteMcpClient {
     private refreshPromise: Promise<void> | null = null;
     constructor(credentials = loadRemoteConfig() ?? undefined) {
         if (!credentials) throw new Error("尚未登录 Canvas 服务，请先运行 canvas-agent login web");
-        this.credentials = credentials;
+        this.credentials = { ...credentials, serverUrl: normalizeServerUrl(credentials.serverUrl) };
     }
     get serverUrl() { return this.credentials.serverUrl; }
     get accessToken() { return this.credentials.accessToken; }
@@ -37,8 +37,8 @@ export class RemoteMcpClient {
             }
             if (response.status === 429 && !rateRetried) {
                 rateRetried = true;
-                const value = Number(response.headers.get("retry-after") || 0);
-                if (Number.isFinite(value) && value > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(value * 1_000, 30_000)));
+                const delayMs = retryAfterDelay(response.headers.get("retry-after"));
+                if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
                 continue;
             }
             const raw = await response.text();
@@ -76,3 +76,12 @@ export class RemoteMcpClient {
 }
 
 export function createRemoteClient() { return new RemoteMcpClient(); }
+
+function retryAfterDelay(value: string | null, now = Date.now()) {
+    if (!value) return 0;
+    const seconds = Number(value.trim());
+    if (Number.isFinite(seconds)) return Math.min(Math.max(0, seconds * 1_000), 30_000);
+    const timestamp = Date.parse(value);
+    if (!Number.isFinite(timestamp)) return 0;
+    return Math.min(Math.max(0, timestamp - now), 30_000);
+}

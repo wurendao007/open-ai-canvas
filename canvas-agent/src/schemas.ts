@@ -152,7 +152,7 @@ export const toolInputSchemas = {
     canvas_connect_nodes: z.object({ connections: z.array(z.object({ fromNodeId: z.string(), toNodeId: z.string(), fromHandleId: z.string().optional(), toHandleId: z.string().optional() })).min(1) }),
     canvas_select_nodes: z.object({ ids: z.array(z.string()) }),
     canvas_set_viewport: z.object({ viewport: viewportSchema }),
-    canvas_run_generation: z.object({ nodeId: z.string(), mode: generationModeSchema.optional(), prompt: z.string().optional(), retry: z.boolean().optional() }),
+    canvas_run_generation: z.object({ nodeId: z.string(), mode: generationModeSchema.optional(), prompt: z.string().optional(), retry: z.boolean().optional(), clientOperationId: z.string().min(1).max(120).optional(), idempotencyKey: z.string().min(1).max(120).optional() }),
     project_get_context: z.object({ projectId: projectIdSchema }),
     project_list_units: z.object({ projectId: projectIdSchema, kind: z.string().optional(), status: z.string().optional() }),
     project_extract_asset_candidates: z.object({ projectId: projectIdSchema, candidates: z.array(projectCandidateSchema).min(1).max(100) }),

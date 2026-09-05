@@ -29,7 +29,7 @@ function registerRemoteTool(server: McpServer, client: RemoteMcpClient, name: To
         const planned = planTool(name, input, snapshot);
         let result: unknown;
         if (planned.tool === "read") result = readProjection(name, input, snapshot, project);
-        else if (planned.tool === "validate") result = await client.validate(selection.projectId, { ops: planned.input.ops });
+        else if (planned.tool === "validate") result = await client.validate(selection.projectId, { ops: planned.input.ops, expectedRevision: requiredRevision(input, project), expectedStateHash: requiredHash(input, project) });
         else if (planned.tool === "generate") result = await client.generate(selection.projectId, { ...planned.input, expectedRevision: requiredRevision(input, project), expectedStateHash: requiredHash(input, project) });
         else result = await client.apply(selection.projectId, { ...planned.input, expectedRevision: requiredRevision(input, project), expectedStateHash: requiredHash(input, project) });
         return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };

@@ -19,19 +19,25 @@ export function configDirectory() {
 export function credentialsPath() { return path.join(configDirectory(), "credentials.json"); }
 export function projectSelectionPath() { return path.join(configDirectory(), "project.json"); }
 
+export function normalizeServerUrl(value: string) {
+    const parsed = new URL(value.trim());
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash) {
+        throw new Error("Canvas 服务地址必须是没有凭据和查询参数的 HTTPS 地址");
+    }
+    return parsed.origin;
+}
+
 export function serverUrl() {
     const value = process.env.YINGCE_SERVER_URL?.trim();
     if (!value) throw new Error("请配置 YINGCE_SERVER_URL，例如 https://canvas.example.com");
-    const parsed = new URL(value);
-    if (!/^https?:$/.test(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) throw new Error("YINGCE_SERVER_URL 必须是没有凭据和查询参数的 HTTP(S) 地址");
-    return parsed.origin;
+    return normalizeServerUrl(value);
 }
 
 export function loadRemoteConfig(): RemoteCredentials | null {
     try {
         const raw = JSON.parse(fs.readFileSync(credentialsPath(), "utf8")) as Partial<RemoteCredentials>;
         if (!raw.serverUrl || !raw.accessToken || !raw.refreshToken) return null;
-        return { serverUrl: new URL(raw.serverUrl).origin, accessToken: raw.accessToken, refreshToken: raw.refreshToken, expiresAt: raw.expiresAt };
+        return { serverUrl: normalizeServerUrl(raw.serverUrl), accessToken: raw.accessToken, refreshToken: raw.refreshToken, expiresAt: raw.expiresAt };
     } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
         throw error;
@@ -39,6 +45,7 @@ export function loadRemoteConfig(): RemoteCredentials | null {
 }
 
 export function saveRemoteConfig(value: RemoteCredentials) {
+    value = { ...value, serverUrl: normalizeServerUrl(value.serverUrl) };
     fs.mkdirSync(configDirectory(), { recursive: true });
     fs.writeFileSync(credentialsPath(), JSON.stringify(value, null, 2), { mode: 0o600 });
     try { fs.chmodSync(credentialsPath(), 0o600); } catch { /* Windows has no chmod semantics. */ }
